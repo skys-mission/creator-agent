@@ -2,6 +2,9 @@
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
 # Binaries for programs and plugins
+/creator-agent
+/creator-agent.race
+*.race
 *.exe
 *.exe~
 *.dll
@@ -30,3 +33,22 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# AI 助手项目配置与记忆
+.claude/
+/CLAUDE.md
+/AGENTS.md
+
+# 密钥与凭证
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# 本地开发配置（覆盖/敏感）
+*.local.yaml
+*.local.yml
+*.local.json
+config.local.*
+

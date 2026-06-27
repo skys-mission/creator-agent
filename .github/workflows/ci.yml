@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, cleanup/*]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+  schedule:
+    # 每天凌晨 3:17 跑一次压力测试（避开整点 herd）
+    - cron: "17 3 * * *"
+
+jobs:
+  test:
+    name: Test (race + vet + fmt + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Format check
+        run: |
+          # gofmt -l 列出格式不符的文件；非空即失败
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+  # 压力测试：高次数 race 检测，捕捉 flaky race。
+  stress-test:
+    name: Stress test (race -count=10)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Stress test with race detector
+        run: go test -race -count=10 ./...
+
+  # macOS 跑 bash 进程组 / sandbox 等平台相关代码（darwin 路径需覆盖）
+  test-macos:
+    name: Test (race, macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
