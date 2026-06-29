@@ -128,6 +128,27 @@ TUI 崩溃或渲染异常难复现时，按以下工具逐步定位（均不改�
 
 注意：Go 1.25 的 `mallocgcSmallNoscan` 分配路径与 efence 不完全兼容，efence 下偶发的 SIGBUS 多属误报；checkptr 改变分配时序，常能把普通版必崩的路径变成"不崩但暴露逻辑 bug"，适合定位渲染类问题。
 
+## 4. 隔离 dev 沙箱（一键、用完即焚）
+
+手动跑 agent 做端到端验证时，直接在项目里跑有风险：agent 会读/写当前仓库，session/memory 也会混进 `~/.creator`。`dev-sandbox` 提供一个**自包含、用完即焚**的隔离环境：
+
+```bash
+make dev-sandbox                            # 交互 TUI，跑在全新隔离沙箱里
+scripts/dev-sandbox.sh -- "读 a.txt 回答"   # headless 一次性
+CA_MODE=auto  make dev-sandbox              # 允许写（仍只落在沙箱内）
+CA_MODE=sandbox make dev-sandbox            # OS 级强隔离（sandbox-exec，防 bash 蓄意绕过）
+CA_KEEP=bugx  make dev-sandbox              # 保留沙箱到 ~/.cache/dev-sandboxes/bugx，下次接着测
+CA_BIN=./creator-agent make dev-sandbox     # 跳过编译，用已有二进制（迭代更快）
+```
+
+原理：脚本把 `HOME` 和 `cwd` 都指向一个临时沙箱目录，agent 的 config/sessions/memory/history/trace 全部自包含其中；启动前自动 `go build` 出新二进制放进沙箱。退出时（含 Ctrl-C）整个沙箱连同二进制一并删除——**不碰源码仓库、不碰 `~/.creator`、不碰 git**。
+
+安全细节：
+
+- **key 不落盘**：脚本从真实 config 的 `default` profile 读出 key（与 `config.Resolve` 一致），经 `OPENAI_API_KEY` 注入进程；已设置的 `OPENAI_API_KEY` 不会被覆盖。沙箱内的 config 副本已把各 profile 的 `api_key` 抹空，磁盘不含密钥。
+- **默认 `default`**：读操作自动通过，写/修改操作会询问确认；需要测自动写能力用 `CA_MODE=auto`（写也只落沙箱内），需要强制只读用 `CA_MODE=readonly`。
+- `CA_KEEP` 只在需要跨次复用同一 session 时才用；保留的沙箱在 `~/.cache/dev-sandboxes/`，手动 `rm -rf` 清理。
+
 ## 给 AI 编码助手的提示
 
 - 改 `core` / adapter 后：跑 `go test -race ./...`（单测）+ `go test -tags=integration ./... -run Real`（真实，需 key）。

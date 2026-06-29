@@ -1,4 +1,4 @@
-.PHONY: build run test test-cover bench vet fmt tidy install clean help
+.PHONY: build run test test-cover bench vet fmt tidy install clean dev-sandbox help
 
 BINARY := creator-agent
 
@@ -36,6 +36,9 @@ install: ## 安装到 GOBIN
 
 clean: ## 清理构建产物
 	rm -f $(BINARY)
+
+dev-sandbox: ## 一键隔离 dev/测试环境（自动编译 + 一次性沙箱 + 用完即焚；传 prompt: ARGS='-- "hi"')
+	@scripts/dev-sandbox.sh $(ARGS)
 
 help: ## 显示本帮助
 	@awk 'BEGIN {FS = ":.*##"; printf "用法:\n  make <target>\n\ntargets:\n"} /^[a-zA-Z_-]+.*:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)

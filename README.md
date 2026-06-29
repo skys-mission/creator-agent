@@ -111,6 +111,7 @@ Core 通过**防腐层**（`adapters/openai`）隔离底层 SDK：对外只暴�
 ```bash
 make build       # 编译二进制
 make run         # 编译并进入交互模式
+make dev-sandbox # 一键隔离 dev/测试沙箱（自动编译+一次性+用完即焚）
 make test        # 跑全部测试（含 race）
 make test-cover  # 测试 + 覆盖率（含 race）
 make bench       # 基准测试（纯函数热路径）
