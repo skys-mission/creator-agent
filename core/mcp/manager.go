@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/skys-mission/creator-agent/core"
 )
@@ -204,7 +204,7 @@ func (m *Manager) SetEnabled(ctx context.Context, name string, enabled bool) err
 // applyConnectResult finalizes a connect handshake under m.mu: clears connecting, and on success
 // installs the client+tools (adapted to core.Tool) + enables the server; on failure records lastErr
 // + keeps it disabled. rawTools is the MCP-SDK tool list from ListTools; the client adapts it.
-func (m *Manager) applyConnectResult(name string, c *Client, rawTools []mcp.Tool, err error) {
+func (m *Manager) applyConnectResult(name string, c *Client, rawTools []*mcp.Tool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ms, ok := m.servers[name]

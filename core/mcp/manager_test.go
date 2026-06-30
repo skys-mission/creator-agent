@@ -13,12 +13,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/skys-mission/creator-agent/core"
 )
+
+// registerOneTool returns an in-process server hook that registers a single tool (named name)
+// returning the fixed text "ok".
+func registerOneTool(name string) func(*mcp.Server) {
+	return func(srv *mcp.Server) {
+		mcp.AddTool(srv, &mcp.Tool{Name: name, Description: "test tool"},
+			func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+			})
+	}
+}
 
 // inProcessFactory returns a clientFactory that builds a fresh in-process server + client per
 // call, each registering one tool named toolName. connectFailures, if non-nil, is incremented on
@@ -28,25 +37,7 @@ func inProcessFactory(toolName string, connectFailures *int32) clientFactory {
 		if connectFailures != nil {
 			atomic.AddInt32(connectFailures, 1)
 		}
-		srv := server.NewMCPServer(cfg.Name, "1.0.0")
-		srv.AddTool(
-			mcp.NewTool(toolName, mcp.WithDescription("test tool")),
-			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
-			},
-		)
-		mc, err := client.NewInProcessClient(srv)
-		if err != nil {
-			return nil, err
-		}
-		req := mcp.InitializeRequest{}
-		req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		req.Params.ClientInfo = mcp.Implementation{Name: "test"}
-		if _, err := mc.Initialize(ctx, req); err != nil {
-			_ = mc.Close()
-			return nil, err
-		}
-		return newWithClient(cfg.Name, mc, nil), nil
+		return newInProcessClient(cfg.Name, nil, registerOneTool(toolName))
 	}
 }
 
@@ -228,28 +219,15 @@ func TestManagerHasServers(t *testing.T) {
 // every name in toolNames. Used by per-tool tests that need several tools on one server.
 func inProcessMultiToolFactory(toolNames []string) clientFactory {
 	return func(ctx context.Context, cfg ServerConfig) (*Client, error) {
-		srv := server.NewMCPServer(cfg.Name, "1.0.0")
-		for _, name := range toolNames {
-			n := name
-			srv.AddTool(
-				mcp.NewTool(n, mcp.WithDescription("test tool")),
-				func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-					return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
-				},
-			)
-		}
-		mc, err := client.NewInProcessClient(srv)
-		if err != nil {
-			return nil, err
-		}
-		req := mcp.InitializeRequest{}
-		req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		req.Params.ClientInfo = mcp.Implementation{Name: "test"}
-		if _, err := mc.Initialize(ctx, req); err != nil {
-			_ = mc.Close()
-			return nil, err
-		}
-		return newWithClient(cfg.Name, mc, nil), nil
+		return newInProcessClient(cfg.Name, nil, func(srv *mcp.Server) {
+			for _, name := range toolNames {
+				n := name
+				mcp.AddTool(srv, &mcp.Tool{Name: n, Description: "test tool"},
+					func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+						return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+					})
+			}
+		})
 	}
 }
 

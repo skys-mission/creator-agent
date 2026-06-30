@@ -1,21 +1,30 @@
 package mcp
 
+// Package mcp is the MCP (Model Context Protocol) client adapter layer.
+//
+// Position (anti-corruption layer boundary): a standalone adapter package alongside core/adapters/openai/.
+// Only imports core + github.com/modelcontextprotocol/go-sdk (does not depend on the LLM anti-corruption
+// layer). Adapts MCP server tools into core.Tool.
+//
+// capability: the MCP protocol does not carry ReadOnly/ConcurrencySafe, so defaults are fail-closed
+// (not read-only, not concurrency-safe); config can declare per-tool overrides.
+
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/skys-mission/creator-agent/core"
 )
 
-// AdaptTools adapts a list of mcp.Tool into a list of core.Tool.
+// AdaptTools adapts a list of *mcp.Tool into a list of core.Tool.
 //
 // capability: defaults to fail-closed (not read-only, not concurrency-safe, MaxResultChars=20000);
 // overrides declared in client.overrides take precedence.
-func (c *Client) AdaptTools(tools []mcp.Tool) []core.Tool {
+func (c *Client) AdaptTools(tools []*mcp.Tool) []core.Tool {
 	out := make([]core.Tool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, &adaptedTool{client: c, tool: t, schema: resolveInputSchema(t)})
@@ -23,21 +32,33 @@ func (c *Client) AdaptTools(tools []mcp.Tool) []core.Tool {
 	return out
 }
 
-// resolveInputSchema converts an mcp.Tool's input schema to JSON once, at adaptation time. A server
-// that returns no usable schema falls back to a permissive default; the warning is emitted here
-// (once per tool) rather than in Info(), which the agent loop calls repeatedly.
-func resolveInputSchema(t mcp.Tool) json.RawMessage {
-	if schema, err := t.InputSchema.MarshalJSON(); err == nil && len(schema) > 0 {
-		return json.RawMessage(schema)
+// resolveInputSchema converts a tool's input schema to JSON once, at adaptation time. The SDK exposes
+// InputSchema as any (the default JSON marshaling of the server's schema, typically map[string]any);
+// we marshal it back to JSON Schema bytes. A server that returns no usable schema falls back to a
+// permissive default; the warning is emitted here (once per tool) rather than in Info(), which the
+// agent loop calls repeatedly.
+func resolveInputSchema(t *mcp.Tool) json.RawMessage {
+	const defaultSchema = `{"type":"object"}`
+	name := ""
+	if t != nil {
+		name = t.Name
 	}
-	core.Warnf("mcp tool %q returned no usable input schema; using permissive default {\"type\":\"object\"}", t.Name)
-	return json.RawMessage(`{"type":"object"}`)
+	if t == nil || t.InputSchema == nil {
+		core.Warnf("mcp tool %q returned no usable input schema; using permissive default {\"type\":\"object\"}", name)
+		return json.RawMessage(defaultSchema)
+	}
+	schema, err := json.Marshal(t.InputSchema)
+	if err != nil || len(schema) == 0 || string(schema) == "null" {
+		core.Warnf("mcp tool %q returned no usable input schema; using permissive default {\"type\":\"object\"}", name)
+		return json.RawMessage(defaultSchema)
+	}
+	return json.RawMessage(schema)
 }
 
-// adaptedTool wraps a single mcp.Tool as a core.Tool.
+// adaptedTool wraps a single *mcp.Tool as a core.Tool.
 type adaptedTool struct {
 	client *Client
-	tool   mcp.Tool
+	tool   *mcp.Tool
 	schema json.RawMessage // input schema resolved once at adaptation (see resolveInputSchema)
 }
 
@@ -82,8 +103,9 @@ func (a *adaptedTool) Exec(ctx context.Context, input json.RawMessage) (core.Too
 
 // extractContent concatenates CallToolResult.Content ([]mcp.Content) into a string.
 //
-// MCP content can be TextContent / ImageContent / AudioContent / EmbeddedResource.
-// Text is concatenated; non-text uses a placeholder (core.ToolResult.Content is a string; multimedia left for V2).
+// The SDK decodes every content element as a pointer (*TextContent, *ImageContent, ...), so the type
+// switch matches pointer types. Text is concatenated; non-text uses a placeholder (core.ToolResult.Content
+// is a string; multimedia left for V2).
 func extractContent(res *mcp.CallToolResult) string {
 	if res == nil || len(res.Content) == 0 {
 		return ""
@@ -91,11 +113,11 @@ func extractContent(res *mcp.CallToolResult) string {
 	var sb strings.Builder
 	for _, c := range res.Content {
 		switch v := c.(type) {
-		case mcp.TextContent:
+		case *mcp.TextContent:
 			sb.WriteString(v.Text)
-		case mcp.ImageContent:
+		case *mcp.ImageContent:
 			fmt.Fprintf(&sb, "[image: %s, %d bytes]", v.MIMEType, len(v.Data))
-		case mcp.AudioContent:
+		case *mcp.AudioContent:
 			fmt.Fprintf(&sb, "[audio: %s, %d bytes]", v.MIMEType, len(v.Data))
 		default:
 			// EmbeddedResource or unknown type: JSON fallback

@@ -1,24 +1,23 @@
-// Package mcp is the MCP (Model Context Protocol) client adapter layer.
-//
-// Position (anti-corruption layer boundary): a standalone adapter package alongside core/adapters/openai/.
-// Only imports core + mark3labs/mcp-go (does not depend on the LLM anti-corruption layer). Adapts MCP server tools into core.Tool.
-//
-// capability: the MCP protocol does not carry ReadOnly/ConcurrencySafe, so defaults are fail-closed
-// (not read-only, not concurrency-safe); config can declare per-tool overrides.
 package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// mcpHandshakeTimeout is the client timeout for Initialize/ListTools.
-// Prevents hanging MCP servers (e.g. TCP unresponsive) from blocking agent startup indefinitely.
-// CallTool uses the caller's ctx -- tool execution duration is variable, so no fixed upper limit is enforced.
+// ErrClientClosed is returned when ListTools or CallTool is invoked after Close.
+var ErrClientClosed = errors.New("mcp client closed")
+
+// mcpHandshakeTimeout is the client timeout for connect (initialize) and list-tools.
+// Prevents hanging MCP servers (e.g. an unresponsive TCP endpoint) from blocking agent startup
+// indefinitely. CallTool uses the caller's ctx -- tool execution duration is variable, so no fixed
+// upper limit is enforced there.
 const mcpHandshakeTimeout = 30 * time.Second
 
 // ServerConfig describes the connection config for one MCP server. It is a plain value type with no
@@ -41,20 +40,25 @@ type ToolOverride struct {
 	MaxResultChars  int
 }
 
-// Client wraps an MCP server connection + adapted tools.
+// Client wraps an MCP server session + adapted tools.
 type Client struct {
 	name      string
-	mc        *client.Client
+	session   *mcp.ClientSession
 	overrides map[string]ToolOverride // tool name -> override
+	// closer is optional extra cleanup (e.g. the paired in-process server session in tests); nil in
+	// production. Invoked by Close after the session is closed.
+	closer func() error
 }
 
-// newWithClient constructs from an already-created underlying client (for testing: in-process server).
-// Does not call Initialize (caller is responsible).
-func newWithClient(name string, mc *client.Client, overrides map[string]ToolOverride) *Client {
-	return &Client{name: name, mc: mc, overrides: overrides}
+// newWithSession constructs a Client from an already-connected session (used by tests: an in-process
+// server). The caller is responsible for having completed the connect handshake. closer, if non-nil,
+// is released by Close.
+func newWithSession(name string, session *mcp.ClientSession, overrides map[string]ToolOverride, closer func() error) *Client {
+	return &Client{name: name, session: session, overrides: overrides, closer: closer}
 }
 
-// NewClient establishes a connection + performs the initialize handshake. Caller is responsible for Close.
+// NewClient establishes a transport connection and completes the MCP initialize handshake (the SDK
+// runs the handshake inside Connect). Caller is responsible for Close.
 //
 // Empty type defaults to "stdio".
 func NewClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
@@ -62,53 +66,75 @@ func NewClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
 	if typ == "" {
 		typ = "stdio"
 	}
-	var mc *client.Client
-	var err error
+	var transport mcp.Transport
 	switch typ {
 	case "stdio":
-		mc, err = client.NewStdioMCPClient(cfg.Cmd, cfg.Env, cfg.Args...)
+		if cfg.Cmd == "" {
+			return nil, fmt.Errorf("mcp stdio server %q: empty command", cfg.Name)
+		}
+		cmd := exec.Command(cfg.Cmd, cfg.Args...)
+		// Inherit the parent environment and apply the configured overrides. Setting only cfg.Env would
+		// wipe PATH and other essentials, breaking the spawned server.
+		cmd.Env = append(os.Environ(), cfg.Env...)
+		transport = &mcp.CommandTransport{Command: cmd}
 	case "http", "streamable", "streamable-http":
-		mc, err = client.NewStreamableHttpClient(cfg.URL)
+		transport = &mcp.StreamableClientTransport{Endpoint: cfg.URL}
 	case "sse":
-		mc, err = client.NewSSEMCPClient(cfg.URL)
+		transport = &mcp.SSEClientTransport{Endpoint: cfg.URL}
 	default:
 		return nil, fmt.Errorf("unknown mcp server type %q", typ)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("create mcp client: %w", err)
-	}
 
-	// initialize handshake (timeout guard against hanging servers blocking startup)
-	req := mcp.InitializeRequest{}
-	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	req.Params.ClientInfo = mcp.Implementation{Name: "creator-agent", Version: "0.1"}
-	initCtx, initCancel := context.WithTimeout(ctx, mcpHandshakeTimeout)
-	defer initCancel()
-	if _, err := mc.Initialize(initCtx, req); err != nil {
-		_ = mc.Close()
-		return nil, fmt.Errorf("mcp initialize: %w", err)
+	impl := &mcp.Implementation{Name: "creator-agent", Version: "0.1"}
+	mc := mcp.NewClient(impl, nil)
+
+	// Connect performs the initialize handshake. Timeout guard against hanging servers blocking startup.
+	connectCtx, cancel := context.WithTimeout(ctx, mcpHandshakeTimeout)
+	defer cancel()
+	cs, err := mc.Connect(connectCtx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("mcp connect %q: %w", cfg.Name, err)
 	}
 
 	overrides := make(map[string]ToolOverride, len(cfg.Tools))
 	for _, o := range cfg.Tools {
 		overrides[o.Name] = o
 	}
-	return &Client{name: cfg.Name, mc: mc, overrides: overrides}, nil
+	return &Client{name: cfg.Name, session: cs, overrides: overrides}, nil
 }
 
-// Close closes the underlying connection.
+// Close closes the session (and the optional extra resources in tests). Safe to call multiple times.
 func (c *Client) Close() error {
-	if c.mc == nil {
-		return nil
+	var first error
+	if c.session != nil {
+		first = c.session.Close()
+		c.session = nil
 	}
-	return c.mc.Close()
+	if c.closer != nil {
+		if err := c.closer(); first == nil {
+			first = err
+		}
+		c.closer = nil
+	}
+	return first
 }
 
-// ListTools fetches the tool list from the server (mcp.Tool). Timeout guard.
-func (c *Client) ListTools(ctx context.Context) ([]mcp.Tool, error) {
+func (c *Client) requireSession() (*mcp.ClientSession, error) {
+	if c.session == nil {
+		return nil, ErrClientClosed
+	}
+	return c.session, nil
+}
+
+// ListTools fetches the tool list from the server (*mcp.Tool). Timeout guard.
+func (c *Client) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
+	session, err := c.requireSession()
+	if err != nil {
+		return nil, err
+	}
 	listCtx, listCancel := context.WithTimeout(ctx, mcpHandshakeTimeout)
 	defer listCancel()
-	resp, err := c.mc.ListTools(listCtx, mcp.ListToolsRequest{})
+	resp, err := session.ListTools(listCtx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
@@ -117,10 +143,11 @@ func (c *Client) ListTools(ctx context.Context) ([]mcp.Tool, error) {
 
 // CallTool invokes a tool.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-	res, err := c.mc.CallTool(ctx, req)
+	session, err := c.requireSession()
+	if err != nil {
+		return nil, fmt.Errorf("call tool %q: %w", name, err)
+	}
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		return nil, fmt.Errorf("call tool %q: %w", name, err)
 	}

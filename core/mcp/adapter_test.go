@@ -3,52 +3,106 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/skys-mission/creator-agent/core"
 )
 
+// echoArgs is the typed input for the in-process echo tool. go-sdk's generic AddTool infers the
+// JSON Schema from the struct tags, so the registered tool advertises an "echo" string parameter.
+type echoArgs struct {
+	Echo string `json:"echo,omitempty" jsonschema:"text to echo"`
+}
+
+// newInProcessClient builds a Client backed by an in-process MCP server. register is invoked on the
+// server before connect so the caller can register tools; pass nil for a tool-less server. The
+// paired server session is released by Client.Close via the closer hook. overrides, if non-nil, set
+// per-tool capability overrides on the returned Client.
+func newInProcessClient(name string, overrides map[string]ToolOverride, register func(srv *mcp.Server)) (*Client, error) {
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: "1.0.0"}, nil)
+	if register != nil {
+		register(srv)
+	}
+	st, ct := mcp.NewInMemoryTransports()
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
+		return nil, err
+	}
+	mc := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	cs, err := mc.Connect(ctx, ct, nil)
+	if err != nil {
+		_ = ss.Close()
+		return nil, err
+	}
+	return newWithSession(name, cs, overrides, func() error { return ss.Close() }), nil
+}
+
 // startTestServer starts an in-memory MCP server, registers an echo tool, and returns a connected client.
-// Tool behavior: returns args.echo as-is.
+// Tool behavior: returns "echoed: <echo>".
 func startTestServer(t *testing.T, overrides map[string]ToolOverride) *Client {
 	t.Helper()
-	srv := server.NewMCPServer("test", "1.0.0")
-	srv.AddTool(
-		mcp.NewTool("echo",
-			mcp.WithDescription("echo back input"),
-			mcp.WithString("echo", mcp.Description("text to echo")),
-		),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			echo := ""
-			if args, ok := req.Params.Arguments.(map[string]any); ok {
-				if v, ok := args["echo"].(string); ok {
-					echo = v
-				}
-			}
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{mcp.NewTextContent("echoed: " + echo)},
-			}, nil
-		},
-	)
-
-	mc, err := client.NewInProcessClient(srv)
+	c, err := newInProcessClient("test", overrides, func(srv *mcp.Server) {
+		mcp.AddTool(srv, &mcp.Tool{Name: "echo", Description: "echo back input"},
+			func(ctx context.Context, req *mcp.CallToolRequest, in echoArgs) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "echoed: " + in.Echo}}}, nil, nil
+			})
+	})
 	if err != nil {
 		t.Fatalf("in-process client: %v", err)
 	}
-	req := mcp.InitializeRequest{}
-	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	req.Params.ClientInfo = mcp.Implementation{Name: "test"}
-	if _, err := mc.Initialize(context.Background(), req); err != nil {
-		t.Fatalf("initialize: %v", err)
+	return c
+}
+
+// Verify: nil or missing input schema falls back to permissive default (not JSON null).
+func TestResolveInputSchemaNil(t *testing.T) {
+	got := resolveInputSchema(&mcp.Tool{Name: "no-schema", InputSchema: nil})
+	if string(got) != `{"type":"object"}` {
+		t.Errorf("nil InputSchema = %s, want {\"type\":\"object\"}", got)
 	}
-	return newWithClient("test", mc, overrides)
+}
+
+// Verify: ListTools and CallTool after Close return ErrClientClosed instead of panicking.
+func TestClientClosedOperations(t *testing.T) {
+	c := startTestServer(t, nil)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := c.ListTools(context.Background())
+	if !errors.Is(err, ErrClientClosed) {
+		t.Errorf("ListTools after Close = %v, want ErrClientClosed", err)
+	}
+
+	_, err = c.CallTool(context.Background(), "echo", nil)
+	if !errors.Is(err, ErrClientClosed) {
+		t.Errorf("CallTool after Close = %v, want ErrClientClosed", err)
+	}
+}
+
+// Verify: adapted tool Exec after Close returns error instead of panicking.
+func TestAdaptToolExecAfterClose(t *testing.T) {
+	c := startTestServer(t, nil)
+	tools, _ := c.ListTools(context.Background())
+	coreTools := c.AdaptTools(tools)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := coreTools[0].Exec(context.Background(), json.RawMessage(`{"echo":"hello"}`))
+	if err == nil {
+		t.Fatal("Exec after Close should error")
+	}
+	if !errors.Is(err, ErrClientClosed) {
+		t.Errorf("Exec after Close = %v, want ErrClientClosed", err)
+	}
 }
 
 // Verify: ListTools fetches the registered echo tool.
@@ -158,12 +212,15 @@ func TestAdaptToolExecInvalidInput(t *testing.T) {
 }
 
 // ===== extractContent =====
+//
+// The SDK decodes every content element as a pointer (*TextContent, *ImageContent, ...), so the
+// literals below use pointer types to match what extractContent type-switches on.
 
 func TestExtractContentText(t *testing.T) {
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.NewTextContent("line1"),
-			mcp.NewTextContent("line2"),
+			&mcp.TextContent{Text: "line1"},
+			&mcp.TextContent{Text: "line2"},
 		},
 	}
 	got := extractContent(res)
@@ -185,9 +242,9 @@ func TestExtractContentMixed(t *testing.T) {
 	// Only test text concatenation (image/audio constructors omitted, non-core path)
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.NewTextContent("a"),
-			mcp.NewTextContent("b"),
-			mcp.NewTextContent("c"),
+			&mcp.TextContent{Text: "a"},
+			&mcp.TextContent{Text: "b"},
+			&mcp.TextContent{Text: "c"},
 		},
 	}
 	got := extractContent(res)
@@ -200,7 +257,7 @@ func TestExtractContentMixed(t *testing.T) {
 func TestExtractContentImage(t *testing.T) {
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.ImageContent{Type: "image", Data: "base64data", MIMEType: "image/png"},
+			&mcp.ImageContent{Data: []byte("base64data"), MIMEType: "image/png"},
 		},
 	}
 	got := extractContent(res)
@@ -213,7 +270,7 @@ func TestExtractContentImage(t *testing.T) {
 func TestExtractContentAudio(t *testing.T) {
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.AudioContent{Type: "audio", Data: "base64data", MIMEType: "audio/wav"},
+			&mcp.AudioContent{Data: []byte("base64data"), MIMEType: "audio/wav"},
 		},
 	}
 	got := extractContent(res)
@@ -222,20 +279,17 @@ func TestExtractContentAudio(t *testing.T) {
 	}
 }
 
-// TestExtractContentUnknownType covers the unknown Content type JSON fallback branch.
+// TestExtractContentUnknownType covers the default JSON-fallback branch. The SDK's Content interface
+// has an unexported method, so only SDK-provided types can implement it; we use ResourceLink, which
+// extractContent does not special-case, to reach the default branch.
 func TestExtractContentUnknownType(t *testing.T) {
-	// Use a Content that does not implement a known interface (custom type triggers default JSON fallback)
-	type weird struct {
-		mcp.TextContent // embedded but keeps its own type name, triggering default JSON fallback
-		Foo             string
-	}
 	res := &mcp.CallToolResult{
-		Content: []mcp.Content{weird{Foo: "bar"}},
+		Content: []mcp.Content{&mcp.ResourceLink{URI: "file:///x", Name: "r"}},
 	}
 	got := extractContent(res)
-	// default branch will JSON marshal, should contain Foo field
-	if !strings.Contains(got, "bar") {
-		t.Errorf("unknown type JSON fallback missing content, got %q", got)
+	// default branch JSON-marshals the content; should contain the URI.
+	if !strings.Contains(got, "file:///x") {
+		t.Errorf("default JSON fallback missing content, got %q", got)
 	}
 }
 
@@ -312,23 +366,20 @@ var _ core.Tool = (*adaptedTool)(nil)
 // transport. This closes the gap that only the error path (TestNewClientStdioBadCmd) and the
 // in-process path (startTestServer) were covered.
 func TestNewClientHTTPStreamableConnect(t *testing.T) {
-	srv := server.NewMCPServer("http-test", "1.0.0")
-	srv.AddTool(
-		mcp.NewTool("echo", mcp.WithDescription("echo back input")),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("hi from http")}}, nil
-		},
-	)
-	// Serve the streamable-http MCP server on a test HTTP server. The handler serves at /mcp by
-	// default; we point the client at the full URL.
-	httpSrv := server.NewStreamableHTTPServer(srv)
-	ts := httptest.NewServer(httpSrv)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "http-test", Version: "1.0.0"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "echo", Description: "echo back input"},
+		func(ctx context.Context, req *mcp.CallToolRequest, in echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "hi from http"}}}, nil, nil
+		})
+	// Serve the streamable-http MCP server on a test HTTP server. The handler accepts any path.
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c, err := NewClient(ctx, ServerConfig{Name: "http-server", Type: "http", URL: ts.URL + "/mcp"})
+	c, err := NewClient(ctx, ServerConfig{Name: "http-server", Type: "http", URL: ts.URL})
 	if err != nil {
 		t.Fatalf("NewClient(http): %v", err)
 	}
@@ -368,17 +419,15 @@ func TestNewClientHTTPBadURL(t *testing.T) {
 // path).
 func TestLoadAllHTTPMultiple(t *testing.T) {
 	start := func(name, toolName string) string {
-		srv := server.NewMCPServer(name, "1.0.0")
-		srv.AddTool(
-			mcp.NewTool(toolName, mcp.WithDescription("test tool")),
-			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
-			},
-		)
-		h := server.NewStreamableHTTPServer(srv)
+		srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: "1.0.0"}, nil)
+		mcp.AddTool(srv, &mcp.Tool{Name: toolName, Description: "test tool"},
+			func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+			})
+		h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 		ts := httptest.NewServer(h)
 		t.Cleanup(ts.Close)
-		return ts.URL + "/mcp"
+		return ts.URL
 	}
 	urlA := start("alpha", "tool_a")
 	urlB := start("beta", "tool_b")
