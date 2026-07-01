@@ -1,22 +1,21 @@
-// Package openai implements core.ModelProvider using the official SDK github.com/openai/openai-go.
+// Package openaichat implements core.ModelProvider for the OpenAI Chat Completions protocol
+// (/v1/chat/completions) using the official SDK github.com/openai/openai-go.
 //
 // This is an anti-corruption layer: core depends only on the core.ModelProvider interface.
 // This package translates core messages/tools into openai-go parameters and converts
 // streaming chunks back into core.ModelEvent. Breaking changes in openai-go are confined
 // to this package; core and upper layers remain unaffected.
 //
-// v0.1: OpenAI Chat Completions (compatible with any OpenAI-compatible endpoint).
-// Anthropic Messages / OpenAI Responses are planned for separate adapters (core/adapters/anthropic, etc.).
-package openai
+// Chat Completions is the de-facto standard supported by any OpenAI-compatible endpoint.
+// The OpenAI Responses protocol lives in core/adapters/openai-responses; Anthropic Messages
+// lives in core/adapters/anthropic.
+package openaichat
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"runtime/debug"
 	"sort"
@@ -25,15 +24,16 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/shared"
+	oshared "github.com/openai/openai-go/shared" // alias: SDK shares the name "shared" with our adapters/shared
 
 	core "github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 )
 
 // defaultStreamTimeout is the default total timeout for streaming calls
 // (fallback when the upstream context has no deadline). Coding agents may
 // produce long output; 10 minutes is the default. Users can adjust via
-// Config.RequestTimeout (0 = unlimited).
+// ProviderConfig.RequestTimeout (0 = unlimited).
 const defaultStreamTimeout = 10 * time.Minute
 
 // Provider is a ModelProvider implementation based on the official openai-go SDK.
@@ -56,29 +56,9 @@ type Provider struct {
 	maxTokens   *int64
 }
 
-// Config holds configuration for an OpenAI-compatible endpoint.
-// Does not expose SDK types so callers can use it directly.
-type Config struct {
-	BaseURL        string
-	APIKey         string
-	Model          string
-	RequestTimeout time.Duration // total timeout for a single streaming call; 0 = default (10 min), negative = unlimited
-
-	// Variant overrides (resolved from the selected profile variant by the caller). Empty/nil = none.
-	// Applied on every request; runtime variant switching builds a new Provider.
-	ExtraHeaders map[string]string
-	ExtraBody    map[string]any
-
-	// Generation defaults from the variant; nil = no override. The caller's per-request values in
-	// ModelRequest always take precedence over these.
-	Temperature *float64
-	TopP        *float64
-	MaxTokens   *int64
-}
-
 // NewProvider creates a new Provider. If BaseURL is empty, the SDK default (official endpoint) is used.
 // Retries use the SDK's built-in WithMaxRetries: openai-go automatically retries 408/409/429 with backoff during the setup phase.
-func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
+func NewProvider(ctx context.Context, cfg shared.ProviderConfig) (*Provider, error) {
 	timeout := cfg.RequestTimeout
 	if timeout == 0 {
 		timeout = defaultStreamTimeout
@@ -88,7 +68,7 @@ func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		option.WithMaxRetries(3),
 		// Force HTTP/1.1: some OpenAI-compatible endpoints trigger HTTP/2 framing panics in
 		// net/http (outside recover scope); HTTP/1.1 surfaces connection errors instead.
-		option.WithHTTPClient(newHTTP1Client(timeout)),
+		option.WithHTTPClient(shared.HTTP1Client(timeout)),
 	}
 	if timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(timeout))
@@ -109,34 +89,6 @@ func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		p.timeout = timeout
 	}
 	return p, nil
-}
-
-// newHTTP1Client creates an http.Client forced to HTTP/1.1.
-// ForceAttemptHTTP2=false plus TLS NextProtos limited to http/1.1 (no ALPN h2 negotiation)
-// prevents http2 connection establishment entirely, avoiding the http2Framer.ReadFrame panic path.
-func newHTTP1Client(timeout time.Duration) *http.Client {
-	transport := &http.Transport{
-		ForceAttemptHTTP2: false, // do not attempt http2
-		// ALPN only negotiates http/1.1 (even if the server supports h2, the client will not upgrade)
-		TLSClientConfig: &tls.Config{
-			NextProtos: []string{"http/1.1"},
-		},
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	client := &http.Client{
-		Transport: transport,
-	}
-	if timeout > 0 {
-		client.Timeout = timeout
-	}
-	return client
 }
 
 // Stream implements core.ModelProvider: converts openai-go streaming chunks into a core.ModelEvent channel.
@@ -376,7 +328,7 @@ func toAssistantMessage(m core.Message) openai.ChatCompletionMessageParamUnion {
 func toOpenAITools(tools []core.ToolInfo) []openai.ChatCompletionToolParam {
 	out := make([]openai.ChatCompletionToolParam, 0, len(tools))
 	for _, t := range tools {
-		fn := shared.FunctionDefinitionParam{
+		fn := oshared.FunctionDefinitionParam{
 			Name:        t.Name,
 			Description: openai.String(t.Description),
 			Parameters:  toFunctionParameters(t.InputSchema),
@@ -390,15 +342,15 @@ func toOpenAITools(tools []core.ToolInfo) []openai.ChatCompletionToolParam {
 
 // toFunctionParameters converts a JSON schema (json.RawMessage) into SDK FunctionParameters (map).
 // On parse failure, falls back to the minimal valid schema (object + empty properties) so the tool remains usable.
-func toFunctionParameters(raw json.RawMessage) shared.FunctionParameters {
+func toFunctionParameters(raw json.RawMessage) oshared.FunctionParameters {
 	if len(raw) == 0 {
-		return shared.FunctionParameters{"type": "object", "properties": map[string]any{}}
+		return oshared.FunctionParameters{"type": "object", "properties": map[string]any{}}
 	}
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
-		return shared.FunctionParameters{"type": "object", "properties": map[string]any{}}
+		return oshared.FunctionParameters{"type": "object", "properties": map[string]any{}}
 	}
-	return shared.FunctionParameters(m)
+	return oshared.FunctionParameters(m)
 }
 
 // convertChunk: one openai ChatCompletionChunk -> multiple core.ModelEvent.

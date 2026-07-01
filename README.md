@@ -46,7 +46,7 @@ go install github.com/skys-mission/creator-agent/cmd/creator-agent@latest
 default = "deepseek"
 
 [profiles.deepseek]
-type = "openai"            # provider 类型（openai=OpenAI 兼容，默认）
+type = "openai"            # provider 类型：openai（默认，OpenAI 兼容）/ openai-responses / anthropic
 base_url = "https://api.deepseek.com"
 api_key = "sk-xxx"
 model = "deepseek-chat"

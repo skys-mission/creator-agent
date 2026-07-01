@@ -1,4 +1,4 @@
-package openai
+package openaichat
 
 import (
 	"encoding/json"

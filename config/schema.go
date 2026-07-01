@@ -67,7 +67,8 @@ type Config struct {
 // Type specifies the provider type (determines which adapter to use):
 //   - "openai" (default/empty): OpenAI Chat Completions, compatible with all OpenAI-compatible
 //     endpoints (OpenAI/DeepSeek/Tongyi/Zhipu/Kimi/ollama, etc.)
-//   - "anthropic": Anthropic Messages (not yet implemented in v0.1)
+//   - "openai-responses": OpenAI Responses API (/v1/responses); OpenAI only, not interoperable
+//   - "anthropic": Anthropic Messages (/v1/messages); Claude models, with extended thinking
 type Profile struct {
 	Type           string `toml:"type"`
 	BaseURL        string `toml:"base_url"`

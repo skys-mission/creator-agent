@@ -6,7 +6,7 @@
 // For example: have the real model read a real file and answer its content — verifying OpenAI adapter tool_call streaming parsing,
 // core loop tool execution, result backfill, and second-turn model call all work together correctly.
 //
-// Safety: contains no API keys (see core/adapters/openai/integration_realapi_test.go for env reading).
+// Safety: contains no API keys (see core/adapters/openai-chat/integration_realapi_test.go for env reading).
 // build tag=integration + CREATOR_AGENT_TEST_API_KEY double gating.
 // Run instructions in docs/testing.md.
 package main
@@ -21,7 +21,8 @@ import (
 	"time"
 
 	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/adapters/openai"
+	openaichat "github.com/skys-mission/creator-agent/core/adapters/openai-chat"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 	"github.com/skys-mission/creator-agent/core/builtins"
 )
 
@@ -61,7 +62,7 @@ func requireReal(t *testing.T) (core.Agent, context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
-	provider, err := openai.NewProvider(ctx, openai.Config{
+	provider, err := openaichat.NewProvider(ctx, shared.ProviderConfig{
 		BaseURL:        env.baseURL,
 		APIKey:         env.apiKey,
 		Model:          env.model,

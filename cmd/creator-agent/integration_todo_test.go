@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/adapters/openai"
+	openaichat "github.com/skys-mission/creator-agent/core/adapters/openai-chat"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 	"github.com/skys-mission/creator-agent/core/builtins"
 )
 
@@ -22,7 +23,7 @@ func TestRealTodoWrite(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	provider, err := openai.NewProvider(ctx, openai.Config{
+	provider, err := openaichat.NewProvider(ctx, shared.ProviderConfig{
 		BaseURL: env.baseURL, APIKey: env.apiKey, Model: env.model, RequestTimeout: 80 * time.Second,
 	})
 	if err != nil {

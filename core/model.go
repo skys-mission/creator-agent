@@ -50,6 +50,14 @@ type MTextDelta struct{ Delta string }
 // MThinkingDelta is a reasoning/thinking delta.
 type MThinkingDelta struct{ Delta string }
 
+// MThinkingSignature carries an incremental signature delta for a thinking block.
+//
+// Required for Anthropic extended thinking multi-turn continuity: the signature must be replayed
+// in the next turn's request or the API returns 400. The loop accumulates it onto the assistant
+// message's ReasoningToken; OpenAI Responses may reuse this channel for reasoning encrypted_content.
+// It is not surfaced to the user (it is an opaque replay token, not displayable text).
+type MThinkingSignature struct{ Signature string }
+
 // MToolUseDelta is a streaming delta of tool arguments (the model emits arguments incrementally).
 // Name is present when the tool name appears in the stream (may be empty; the loop uses the last non-empty value).
 type MToolUseDelta struct {
@@ -74,13 +82,14 @@ type MFinish struct{ Reason string }
 // MError is a model stream error (mid-stream failure; the loop should abort and report).
 type MError struct{ Err error }
 
-func (MTextDelta) isModelEvent()       {}
-func (MThinkingDelta) isModelEvent()   {}
-func (MToolUseDelta) isModelEvent()    {}
-func (MToolUseComplete) isModelEvent() {}
-func (MUsage) isModelEvent()           {}
-func (MFinish) isModelEvent()          {}
-func (MError) isModelEvent()           {}
+func (MTextDelta) isModelEvent()         {}
+func (MThinkingDelta) isModelEvent()     {}
+func (MThinkingSignature) isModelEvent() {}
+func (MToolUseDelta) isModelEvent()      {}
+func (MToolUseComplete) isModelEvent()   {}
+func (MUsage) isModelEvent()             {}
+func (MFinish) isModelEvent()            {}
+func (MError) isModelEvent()             {}
 
 // CollectText calls the model once and concatenates all text deltas into a single string.
 //

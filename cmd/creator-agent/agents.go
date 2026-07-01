@@ -12,13 +12,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui"
 	"github.com/skys-mission/creator-agent/config"
 	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/adapters/openai"
+	"github.com/skys-mission/creator-agent/core/adapters/anthropic"
+	openaichat "github.com/skys-mission/creator-agent/core/adapters/openai-chat"
+	openairesponses "github.com/skys-mission/creator-agent/core/adapters/openai-responses"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 	"github.com/skys-mission/creator-agent/core/builtins"
 	"github.com/skys-mission/creator-agent/core/middlewares"
 )
@@ -123,12 +127,12 @@ func systemPromptForAgent(agentName string, specs []agentSpec) string {
 	return systemPrompt
 }
 
-// resolveVariantConfig builds an openai.Config for the named variant of the given profile. A
+// resolveVariantConfig builds a shared.ProviderConfig for the named variant of the given profile. A
 // variantName of "" or "default" yields the profile's plain config (no overrides). An unknown
 // variant name yields an error.
-func resolveVariantConfig(prof config.Profile, reqTimeout time.Duration, variantName string) (openai.Config, error) {
+func resolveVariantConfig(prof config.Profile, reqTimeout time.Duration, variantName string) (shared.ProviderConfig, error) {
 	vName := normalizeVariantName(variantName)
-	cfg := openai.Config{
+	cfg := shared.ProviderConfig{
 		BaseURL:        prof.BaseURL,
 		APIKey:         prof.APIKey,
 		Model:          prof.Model,
@@ -140,7 +144,7 @@ func resolveVariantConfig(prof config.Profile, reqTimeout time.Duration, variant
 	v, ok := prof.Variants[vName]
 	if !ok {
 		known := strings.Join(prof.VariantNames(), ", ")
-		return openai.Config{}, fmt.Errorf("variant %q not found on profile (have: %s)", variantName, known)
+		return shared.ProviderConfig{}, fmt.Errorf("variant %q not found on profile (have: %s)", variantName, known)
 	}
 	cfg.ExtraHeaders = v.Headers
 	cfg.ExtraBody = v.Body
@@ -163,6 +167,28 @@ func resolveVariantConfig(prof config.Profile, reqTimeout time.Duration, variant
 // string and "default" both mean "no variant" and are treated equivalently by callers.
 func normalizeVariantName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// buildProvider resolves the variant config and constructs the provider for the profile's type.
+// When the named variant is not found on the profile, it falls back to the base config with a
+// warning instead of failing. This is the single construction path used by initial startup and
+// the /model and /variants runtime rebuilds.
+func buildProvider(ctx context.Context, prof config.Profile, reqTimeout time.Duration, variant string) (core.ModelProvider, error) {
+	pc, varErr := resolveVariantConfig(prof, reqTimeout, variant)
+	if varErr != nil {
+		fmt.Fprintf(os.Stderr, "warn: variant %q not found, using base config: %v\n", variant, varErr)
+		pc, _ = resolveVariantConfig(prof, reqTimeout, "")
+	}
+	switch prof.NormalizedType() {
+	case "", "openai":
+		return openaichat.NewProvider(ctx, pc)
+	case "openai-responses":
+		return openairesponses.NewProvider(ctx, pc)
+	case "anthropic":
+		return anthropic.NewProvider(ctx, pc)
+	default:
+		return nil, fmt.Errorf("unknown provider type %q", prof.Type)
+	}
 }
 
 // variantSummary returns a one-line description of a variant for TUI display (the override keys).
@@ -218,7 +244,7 @@ func rebuildAgentForAgent(
 	), nil
 }
 
-// rebuildAgentForVariant rebuilds the openai provider with the named variant's overrides applied,
+// rebuildAgentForVariant rebuilds the provider with the named variant's overrides applied,
 // then rebuilds the core.Agent against the new provider (tools/system prompt unchanged). Used by the
 // /variants picker. Returns the new provider (so /model + /mcps rebuilds pick it up) and the agent.
 func rebuildAgentForVariant(
@@ -237,11 +263,7 @@ func rebuildAgentForVariant(
 	ctx context.Context,
 	variantName string,
 ) (core.ModelProvider, core.Agent, error) {
-	oc, err := resolveVariantConfig(prof, reqTimeout, variantName)
-	if err != nil {
-		return nil, nil, err
-	}
-	newProvider, perr := openai.NewProvider(ctx, oc)
+	newProvider, perr := buildProvider(ctx, prof, reqTimeout, variantName)
 	if perr != nil {
 		return nil, nil, fmt.Errorf("build provider for variant %q: %w", variantName, perr)
 	}

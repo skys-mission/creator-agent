@@ -36,14 +36,17 @@ type providerPreset struct {
 	label        string
 	baseURL      string
 	defaultModel string
+	providerType string // config.Profile.Type written for this preset
 	custom       bool
 }
 
 func wizardPresets() []providerPreset {
 	return []providerPreset{
-		{id: "deepseek", label: "DeepSeek", baseURL: "https://api.deepseek.com", defaultModel: "deepseek-chat"},
-		{id: "openai", label: "OpenAI", baseURL: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini"},
-		{id: "custom", label: i18n.T("wizard.provider.custom"), custom: true},
+		{id: "deepseek", label: "DeepSeek", baseURL: "https://api.deepseek.com", defaultModel: "deepseek-chat", providerType: "openai"},
+		{id: "openai", label: "OpenAI", baseURL: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", providerType: "openai"},
+		{id: "openai-responses", label: "OpenAI Responses", baseURL: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", providerType: "openai-responses"},
+		{id: "anthropic", label: "Anthropic (Claude)", baseURL: "https://api.anthropic.com", defaultModel: "claude-3-5-sonnet-latest", providerType: "anthropic"},
+		{id: "custom", label: i18n.T("wizard.provider.custom"), providerType: "openai", custom: true},
 	}
 }
 
@@ -145,7 +148,7 @@ func (wz *wizard) finalize() WizardResult {
 		Confirmed:   true,
 		ProfileName: preset.id,
 		Profile: config.Profile{
-			Type:    "openai",
+			Type:    preset.providerType,
 			BaseURL: strings.TrimSpace(wz.baseURL.Value()),
 			APIKey:  strings.TrimSpace(wz.apiKey.Value()),
 			Model:   strings.TrimSpace(wz.model.Value()),

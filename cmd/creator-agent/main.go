@@ -25,7 +25,6 @@ import (
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui"
 	"github.com/skys-mission/creator-agent/config"
 	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/adapters/openai"
 	"github.com/skys-mission/creator-agent/core/builtins"
 	"github.com/skys-mission/creator-agent/core/mcp"
 	"github.com/skys-mission/creator-agent/core/middlewares"
@@ -85,7 +84,7 @@ func main() {
 		flag.PrintDefaults()
 	}
 	profileName := flag.String("profile", "", "model profile name (from config)")
-	providerType := flag.String("type", "", "provider type (openai/anthropic); default openai")
+	providerType := flag.String("type", "", "provider type (openai/openai-responses/anthropic); default openai")
 	baseURL := flag.String("base-url", "", "OpenAI-compatible base URL")
 	apiKey := flag.String("api-key", "", "API key")
 	modelName := flag.String("model", "", "model name")
@@ -177,19 +176,7 @@ func main() {
 			die(fmt.Errorf("invalid request_timeout %q: %w", prof.RequestTimeout, err))
 		}
 	}
-	switch prof.NormalizedType() {
-	case "openai":
-		oc, varErr := resolveVariantConfig(prof, reqTimeout, normalizeVariantName(prof.Variant))
-		if varErr != nil {
-			fmt.Fprintf(os.Stderr, "warn: default variant %q not found, using base config: %v\n", prof.Variant, varErr)
-			oc, _ = resolveVariantConfig(prof, reqTimeout, "")
-		}
-		provider, err = openai.NewProvider(ctx, oc)
-	case "anthropic":
-		err = fmt.Errorf("anthropic provider not implemented in v0.1")
-	default:
-		err = fmt.Errorf("unknown provider type %q", prof.Type)
-	}
+	provider, err = buildProvider(ctx, prof, reqTimeout, normalizeVariantName(prof.Variant))
 	if err != nil {
 		die(err)
 	}
@@ -328,21 +315,15 @@ func main() {
 				return nil, config.Profile{}, fmt.Errorf("invalid request_timeout %q: %w", newProf.RequestTimeout, rerr)
 			}
 		}
-		if newProf.NormalizedType() != "openai" {
-			return nil, config.Profile{}, fmt.Errorf("runtime switch only supports openai-compatible providers; profile %q is %s", profileName, newProf.NormalizedType())
+		// Runtime /model switch supports all provider types. Carry the current variant only when it
+		// exists on the target profile; otherwise reset to base config and clear the stale name.
+		if _, verr := resolveVariantConfig(newProf, nt, currentVariantName); verr != nil {
+			if normalizeVariantName(currentVariantName) != "" {
+				fmt.Fprintf(os.Stderr, "warn: variant %q not found, using base config: %v\n", currentVariantName, verr)
+			}
+			currentVariantName = ""
 		}
-		// Preserve the current variant across a /model switch: the new provider carries the active
-		// variant's overrides so the user's last variant choice is not silently dropped.
-		// When the variant doesn't exist on the target profile, fall back to the profile's
-		// default config with a warning (instead of passing a zero-value Config to NewProvider).
-		var oc openai.Config
-		oc, varErr := resolveVariantConfig(newProf, nt, currentVariantName)
-		if varErr != nil {
-			fmt.Fprintf(os.Stderr, "warn: variant %q not found on profile %q, using default: %v\n", currentVariantName, profileName, varErr)
-			currentVariantName = "default"
-			oc, _ = resolveVariantConfig(newProf, nt, "")
-		}
-		newProvider, perr := openai.NewProvider(ctx, oc)
+		newProvider, perr := buildProvider(ctx, newProf, nt, currentVariantName)
 		if perr != nil {
 			return nil, config.Profile{}, fmt.Errorf("build provider: %w", perr)
 		}

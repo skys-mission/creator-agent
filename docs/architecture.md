@@ -16,10 +16,10 @@ config/              # 配置加载
 
 **core 是库**：所有 agent 逻辑只在 core，CLI 只是调用 core 的薄入口（不含业务逻辑）。
 
-**防腐层**：openai-go 只活在 `core/adapters/openai/`。core 对外只暴露自己的类型（`Agent` / `Tool` / `ModelProvider` / `Message` / `Event`），不出现 SDK 类型。多 provider 按 `adapters/<vendor>/` 分包，config `type` 字段切换（v0.1 openai）。边界检查：
+**防腐层**：每个模型协议一个适配器，SDK 只活在 `core/adapters/<protocol>/`（`openai-chat` Chat Completions / `openai-responses` Responses API / `anthropic` Messages，共享代码在 `adapters/shared`）。core 对外只暴露自己的类型（`Agent` / `Tool` / `ModelProvider` / `Message` / `Event`），不出现 SDK 类型。config `type` 字段切换协议。边界检查：
 
 ```bash
-grep -rn "openai/openai-go" core/ cmd/ config/ --include="*.go" | grep -v "adapters/openai" | grep -v "_test.go"
+grep -rn "openai/openai-go\|anthropics/anthropic-sdk-go" core/ cmd/ config/ --include="*.go" | grep -v "adapters/openai-chat\|adapters/openai-responses\|adapters/anthropic" | grep -v "_test.go"
 # 应为空
 ```
 

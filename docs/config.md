@@ -27,7 +27,7 @@ version = 1
 default = "deepseek"
 
 [profiles.deepseek]
-type = "openai"              # provider 类型：openai（默认，OpenAI 兼容）/ anthropic（待 v0.2）
+type = "openai"              # provider 类型：openai（默认，OpenAI 兼容）/ openai-responses / anthropic
 base_url = "https://api.deepseek.com"
 api_key = "sk-xxx"
 model = "deepseek-chat"
@@ -186,7 +186,7 @@ MCP server 用独立的 **JSON** 文件配置，沿用业界通用约定 `{"mcpS
 | `OPENAI_API_KEY` | API key | profile 的 api_key |
 | `OPENAI_BASE_URL` | 端点 URL | profile 的 base_url |
 | `OPENAI_MODEL` | 模型名 | profile 的 model |
-| `CREATOR_AGENT_TYPE` | provider 类型（openai/anthropic） | profile 的 type |
+| `CREATOR_AGENT_TYPE` | provider 类型（openai/openai-responses/anthropic） | profile 的 type |
 | `CREATOR_AGENT_REQUEST_TIMEOUT` | 单次流式总超时 | profile 的 request_timeout |
 | `CREATOR_AGENT_DEBUG` | =1 时打印每轮发给模型的消息 + 工具调用到 stderr（诊断用） | — |
 
@@ -195,7 +195,7 @@ MCP server 用独立的 **JSON** 文件配置，沿用业界通用约定 `{"mcpS
 | Flag | 作用 |
 |---|---|
 | `-profile <name>` | 指定 profile |
-| `-type <type>` | 覆盖 provider 类型（openai/anthropic） |
+| `-type <type>` | 覆盖 provider 类型（openai/openai-responses/anthropic） |
 | `-base-url <url>` | 覆盖 base_url |
 | `-api-key <key>` | 覆盖 api_key |
 | `-model <name>` | 覆盖 model |

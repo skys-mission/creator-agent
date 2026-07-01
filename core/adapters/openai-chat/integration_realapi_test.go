@@ -12,7 +12,7 @@
 //
 // This ensures even if -tags=integration is accidentally added locally without a key,
 // no real network calls are made (avoiding leaked test footprint / accidental quota usage).
-package openai
+package openaichat
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	core "github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 )
 
 // testEnv wraps real API config read from environment variables.
@@ -61,7 +62,7 @@ func requireEnv(t *testing.T) (*Provider, context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	p, err := NewProvider(ctx, Config{
+	p, err := NewProvider(ctx, shared.ProviderConfig{
 		BaseURL:        env.baseURL,
 		APIKey:         env.apiKey,
 		Model:          env.model,
@@ -205,7 +206,7 @@ func TestRealStreamBadKey(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	p, err := NewProvider(ctx, Config{
+	p, err := NewProvider(ctx, shared.ProviderConfig{
 		BaseURL: env.baseURL,
 		APIKey:  "sk-invalid-key-for-test-xxxxxxxxxxxx",
 		Model:   env.model,

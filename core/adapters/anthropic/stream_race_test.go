@@ -1,7 +1,8 @@
-package openai
+package anthropic
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -11,34 +12,28 @@ import (
 )
 
 // TestStreamConcurrentIntegrity stresses the streaming decode path: many goroutines share one
-// Provider (as production does) and each opens its own SSE stream, drains the event channel, and
-// reconstructs the text + tool-call arguments. It guards against data races / buffer-aliasing in the
-// SSE scanner, JSON decode, convertChunk, and the channel handoff — the active path during the
-// observed "found bad pointer in Go heap" crashes. Run with `-race`; the content-equality assertions
-// also catch torn reads that race instrumentation can miss (e.g. unsafe zero-copy in a dependency).
+// Provider and each drains its own event stream, reconstructing text + tool-call arguments.
+// Run with `-race`; content-equality assertions also catch torn reads that race instrumentation misses.
 func TestStreamConcurrentIntegrity(t *testing.T) {
-	// Build a long-ish reply across many chunks so the scanner buffer is exercised heavily.
 	textParts := make([]string, 0, 24)
-	bodies := make([]string, 0, 32)
+	frames := make([]sseFrame, 0, 32)
 	for i := 0; i < 24; i++ {
 		part := "tok" + string(rune('A'+i%26)) + "_"
 		textParts = append(textParts, part)
-		bodies = append(bodies, chunkJSON(`{"content":"`+part+`"}`, "", ""))
+		frames = append(frames, sseFrame{"content_block_delta",
+			fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"%s"}}`, part)})
 	}
 	wantText := strings.Join(textParts, "")
 
-	// A streamed tool call whose arguments arrive split across chunks.
-	bodies = append(bodies,
-		chunkJSON(`{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":""}}]}`, "", ""),
-		chunkJSON(`{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]}`, "", ""),
-		chunkJSON(`{"tool_calls":[{"index":0,"function":{"arguments":"\"ls -la\"}"}}]}`, "", ""),
-		chunkJSON(`{}`, "stop", `{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}`),
+	frames = append(frames,
+		sseFrame{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}`},
+		sseFrame{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}`},
+		sseFrame{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"ls -la\"}"}}`},
 	)
 	const wantArgs = `{"command":"ls -la"}`
 
-	srv := sseServer(t, bodies...)
+	srv := sseServer(t, frames...)
 	defer srv.Close()
-
 	p := newTestProvider(t, srv.URL, 10*time.Second)
 
 	const workers = 64

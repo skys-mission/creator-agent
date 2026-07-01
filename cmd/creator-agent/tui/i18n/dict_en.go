@@ -395,7 +395,7 @@ var enDict = map[string]string{
 	// first-run setup wizard
 	"wizard.title":            "Welcome to creator-agent — let's set up your model",
 	"wizard.step":             "Step %d/%d",
-	"wizard.too_small":        "Terminal too small for the setup wizard. Enlarge the window or set OPENAI_API_KEY.",
+	"wizard.too_small":        "Terminal too small for the setup wizard. Enlarge the window, or create the config file manually (see docs/config.md).",
 	"wizard.provider.prompt":  "Choose a provider:",
 	"wizard.provider.custom":  "Custom (OpenAI-compatible base URL)",
 	"wizard.baseurl.prompt":   "Enter the API base URL:",

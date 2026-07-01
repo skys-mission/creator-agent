@@ -395,7 +395,7 @@ var zhDict = map[string]string{
 	// first-run setup wizard
 	"wizard.title":            "欢迎使用 creator-agent —— 先来配置模型",
 	"wizard.step":             "第 %d/%d 步",
-	"wizard.too_small":        "终端太小，无法显示初始化向导。请放大窗口，或设置 OPENAI_API_KEY。",
+	"wizard.too_small":        "终端太小，无法显示初始化向导。请放大窗口，或手动创建配置文件（见 docs/config.md）。",
 	"wizard.provider.prompt":  "选择服务商：",
 	"wizard.provider.custom":  "自定义（OpenAI 兼容 base URL）",
 	"wizard.baseurl.prompt":   "输入 API base URL：",

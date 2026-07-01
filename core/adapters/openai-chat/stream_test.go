@@ -1,4 +1,4 @@
-package openai
+package openaichat
 
 import (
 	"context"
@@ -10,12 +10,13 @@ import (
 	"time"
 
 	core "github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/adapters/shared"
 )
 
 // newTestProvider creates a provider pointing to a mock server. timeout<=0 uses the default.
 func newTestProvider(t *testing.T, baseURL string, timeout time.Duration) *Provider {
 	t.Helper()
-	p, err := NewProvider(context.Background(), Config{
+	p, err := NewProvider(context.Background(), shared.ProviderConfig{
 		BaseURL: baseURL, APIKey: "test", Model: "gpt-4o-mini", RequestTimeout: timeout,
 	})
 	if err != nil {

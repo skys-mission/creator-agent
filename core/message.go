@@ -17,15 +17,17 @@ const (
 // Anti-corruption decision: Core defines its own Message, not reusing the underlying SDK schema.
 // Bidirectional conversion with the underlying (e.g., openai-go types) is handled by core/adapters/.
 type Message struct {
-	Role       Role
-	Content    string         // text content
-	Parts      []Part         // multimodal (images/files), optional
-	ToolCalls  []ToolCall     // assistant-initiated tool calls
-	ToolCallID string         // for role=tool, the associated ToolCall.ID
-	ToolName   string         // for role=tool, the tool name
-	Reasoning  string         // thinking/reasoning content
-	Usage      *Usage         // token usage (usually only on assistant messages)
-	Extra      map[string]any // extension fields (e.g., cache_control), consumed by adapters
+	Role           Role
+	Content        string         // text content
+	Parts          []Part         // multimodal (images/files), optional
+	ToolCalls      []ToolCall     // assistant-initiated tool calls
+	ToolCallID     string         // for role=tool, the associated ToolCall.ID
+	ToolName       string         // for role=tool, the tool name
+	ToolIsError    bool           // for role=tool: whether the tool result was an error (Anthropic tool_result.is_error)
+	Reasoning      string         // thinking/reasoning content
+	ReasoningToken string         // opaque token to replay reasoning next turn (Anthropic thinking signature; OpenAI Responses encrypted_content)
+	Usage          *Usage         // token usage (usually only on assistant messages)
+	Extra          map[string]any // extension fields (e.g., cache_control), consumed by adapters
 }
 
 // ToolCall is a single tool call initiated by the assistant.
@@ -68,6 +70,19 @@ func UserMessage(content string, parts ...Part) Message {
 // AssistantMessage constructs an assistant message (optionally with tool calls).
 func AssistantMessage(content string, toolCalls ...ToolCall) Message {
 	return Message{Role: RoleAssistant, Content: content, ToolCalls: toolCalls}
+}
+
+// AssistantMessageWithReasoning constructs an assistant message carrying thinking text and a
+// provider-specific replay token, so multi-turn continuity (e.g. Anthropic extended thinking
+// signature) survives across turns. The loop uses this to persist every assistant turn.
+func AssistantMessageWithReasoning(content, reasoning, reasoningToken string, toolCalls ...ToolCall) Message {
+	return Message{
+		Role:           RoleAssistant,
+		Content:        content,
+		Reasoning:      reasoning,
+		ReasoningToken: reasoningToken,
+		ToolCalls:      toolCalls,
+	}
 }
 
 // ToolMessage constructs a tool result message (linked to a ToolCall).

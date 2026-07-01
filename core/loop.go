@@ -36,7 +36,7 @@ func (a *agent) runLoop(ctx context.Context, state *RunState, ch chan<- Event) {
 			}
 		}
 
-		toolUses, err := a.runModelTurn(ctx, state, ch)
+		result, err := a.runModelTurn(ctx, state, ch)
 		if err != nil {
 			// Distinguish interrupt vs real error: interrupt finishes gracefully, error is reported.
 			if errors.Is(err, context.Canceled) {
@@ -83,22 +83,38 @@ func (a *agent) runLoop(ctx context.Context, state *RunState, ch chan<- Event) {
 			return
 		}
 
-		if len(toolUses) == 0 {
+		// Persist the full assistant turn (text + reasoning + replay token + tool calls) so
+		// multi-turn context and thinking continuity survive across tool-loop turns and sessions.
+		state.Messages = append(state.Messages, AssistantMessageWithReasoning(
+			result.Text, result.Reasoning, result.Signature, result.ToolCalls...,
+		))
+
+		if len(result.ToolCalls) == 0 {
 			_ = sendEvent(ctx, ch, FinishEvent{Reason: FinishStop})
 			return
 		}
 
-		results := a.executeTools(ctx, toolUses, ch)
-
-		state.Messages = append(state.Messages, AssistantMessage("", toolUses...))
+		results := a.executeTools(ctx, result.ToolCalls, ch)
 		for _, r := range results {
-			state.Messages = append(state.Messages, ToolMessage(r.contentForModel(), r.callID, r.name))
+			tm := ToolMessage(r.contentForModel(), r.callID, r.name)
+			tm.ToolIsError = r.result.IsError || r.err != nil
+			state.Messages = append(state.Messages, tm)
 		}
 	}
 	_ = sendEvent(ctx, ch, FinishEvent{Reason: FinishStepLimit})
 }
 
-func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Event) ([]ToolCall, error) {
+// modelTurnResult holds the accumulated output of a single model turn: full text, reasoning text,
+// a provider-specific reasoning replay token, and the parsed tool calls. The loop persists this as
+// one assistant message so multi-turn context and thinking continuity are preserved.
+type modelTurnResult struct {
+	Text      string
+	Reasoning string
+	Signature string
+	ToolCalls []ToolCall
+}
+
+func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Event) (*modelTurnResult, error) {
 	req := ModelRequest{Messages: state.Messages, Tools: state.Tools}
 	debugLogModelRequest(state.Step, req)
 	// Retry transient connection errors (429/5xx) before the stream starts; mid-stream MError
@@ -107,6 +123,10 @@ func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Eve
 	if err != nil {
 		return nil, err
 	}
+
+	// Accumulate the turn's text, reasoning, and reasoning replay token (e.g. Anthropic thinking
+	// signature) so the loop can persist a full assistant message for multi-turn continuity.
+	var text, reasoning, signature strings.Builder
 
 	type acc struct {
 		name  string
@@ -123,14 +143,20 @@ func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Eve
 		switch e := ev.(type) {
 		case MTextDelta:
 			sawAny = true
+			text.WriteString(e.Delta)
 			if err := sendEvent(ctx, ch, TextEvent{Delta: e.Delta}); err != nil {
 				return nil, err
 			}
 		case MThinkingDelta:
 			sawAny = true
+			reasoning.WriteString(e.Delta)
 			if err := sendEvent(ctx, ch, ThinkingEvent{Delta: e.Delta}); err != nil {
 				return nil, err
 			}
+		case MThinkingSignature:
+			// Opaque replay token (e.g. Anthropic thinking signature); accumulate silently.
+			// Not surfaced to the user.
+			signature.WriteString(e.Signature)
 		case MToolUseDelta:
 			sawAny = true
 			x, ok := accs[e.ID]
@@ -205,7 +231,12 @@ func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Eve
 		calls = append(calls, ToolCall{ID: id, Name: x.name, Input: json.RawMessage(x.parts)})
 	}
 	debugLogToolCalls(state.Step, calls)
-	return calls, nil
+	return &modelTurnResult{
+		Text:      text.String(),
+		Reasoning: reasoning.String(),
+		Signature: signature.String(),
+		ToolCalls: calls,
+	}, nil
 }
 
 // transientRetryMax is the application-level retry limit for transient errors (429/5xx).

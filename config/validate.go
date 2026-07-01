@@ -24,8 +24,8 @@ func (c *Config) validate() []string {
 
 	for _, name := range profileNames(c.Profiles) {
 		t := strings.ToLower(strings.TrimSpace(c.Profiles[name].Type))
-		if t != "" && t != "openai" && t != "anthropic" {
-			w = append(w, fmt.Sprintf("profile %q has unknown type %q (expected openai or anthropic)", name, c.Profiles[name].Type))
+		if t != "" && t != "openai" && t != "openai-responses" && t != "anthropic" {
+			w = append(w, fmt.Sprintf("profile %q has unknown type %q (expected openai, openai-responses, or anthropic)", name, c.Profiles[name].Type))
 		}
 	}
 

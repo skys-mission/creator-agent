@@ -16,7 +16,7 @@ version = 1
 # The profile used when no -profile flag is given.
 default = "deepseek"
 
-# Model profiles. type: openai (default, OpenAI-compatible) | anthropic (not yet implemented in v0.1).
+# Model profiles. type: openai (default, Chat Completions) | openai-responses (Responses API) | anthropic (Messages).
 [profiles.deepseek]
 type = "openai"
 base_url = "https://api.deepseek.com"
