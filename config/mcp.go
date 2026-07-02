@@ -37,7 +37,9 @@ type mcpServerJSON struct {
 	Command  string                         `json:"command"` // stdio: executable
 	Args     []string                       `json:"args"`    // stdio: command arguments
 	Env      map[string]string              `json:"env"`     // stdio: environment variables
+	Cwd      string                         `json:"cwd"`     // stdio: working directory for the spawned process
 	URL      string                         `json:"url"`     // http/sse: server URL
+	Headers  map[string]string              `json:"headers"` // http/sse: extra HTTP headers (e.g. Authorization)
 	Disabled bool                           `json:"disabled"`
 	Tools    map[string]mcpToolOverrideJSON `json:"tools"` // per-tool capability overrides keyed by tool name
 }
@@ -146,13 +148,15 @@ func decodeMCPServer(fields map[string]any) (mcpServerJSON, error) {
 // toServerConfig converts the DTO into the core mcp.ServerConfig value type.
 func (s mcpServerJSON) toServerConfig(name string) mcp.ServerConfig {
 	return mcp.ServerConfig{
-		Name:  name,
-		Type:  s.Type,
-		Cmd:   s.Command,
-		Args:  s.Args,
-		Env:   envPairs(s.Env),
-		URL:   s.URL,
-		Tools: toMCPToolOverrides(s.Tools),
+		Name:    name,
+		Type:    s.Type,
+		Cmd:     s.Command,
+		Args:    s.Args,
+		Env:     envPairs(s.Env),
+		Cwd:     s.Cwd,
+		URL:     s.URL,
+		Headers: s.Headers,
+		Tools:   toMCPToolOverrides(s.Tools),
 	}
 }
 

@@ -109,23 +109,29 @@ func dedupeTools(tools []Tool) []Tool {
 
 type agent struct {
 	cfg       AgentConfig
-	store     SessionStore           // multi-turn memory store (default MemoryStore)
-	sessionMu map[string]*sync.Mutex // per-session execution lock (same session serial, different sessions concurrent)
-	mu        sync.Mutex             // protects sessionMu map
+	store     SessionStore             // multi-turn memory store (default MemoryStore)
+	sessionMu map[string]chan struct{} // per-session execution lock (buffered chan size 1) enabling ctx-aware acquire
+	mu        sync.Mutex               // protects sessionMu map
 }
 
 // sessionLock returns the execution lock for the given session (created on demand).
-// Stream and ClearSession for the same session are serialized so load->run->save transactions do not overlap.
-func (a *agent) sessionLock(id string) *sync.Mutex {
+//
+// It is a buffered channel of size 1 acting as a semaphore, rather than a sync.Mutex, so callers can
+// acquire it under context cancellation (select on ctx.Done). This guarantees that even if one run
+// abandons its event stream without cancelling (a contract violation, see Stream doc), a poisoned
+// session lock cannot block an unrelated future Stream forever — that caller unblocks when its own
+// ctx is done. Stream and ClearSession for the same session are still serialized so load->run->save
+// transactions do not overlap.
+func (a *agent) sessionLock(id string) chan struct{} {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.sessionMu == nil {
-		a.sessionMu = make(map[string]*sync.Mutex)
+		a.sessionMu = make(map[string]chan struct{})
 	}
 	if m, ok := a.sessionMu[id]; ok {
 		return m
 	}
-	m := &sync.Mutex{}
+	m := make(chan struct{}, 1)
 	a.sessionMu[id] = m
 	return m
 }
@@ -137,19 +143,30 @@ func (a *agent) sessionLock(id string) *sync.Mutex {
 //
 // Concurrency safety: Stream and ClearSession for the same sessionID are serialized by a per-session lock.
 // The core guarantees load->append->run->save transactions do not overlap. Different sessionIDs may run concurrently.
+//
+// Consumer contract: the caller MUST either drain the returned channel until it is closed, or cancel
+// ctx. Abandoning the channel without cancelling leaves the worker goroutine blocked on its final
+// send (holding the per-session lock) until ctx is eventually cancelled. Other sessions are unaffected;
+// a later Stream on the same session will not hang forever because lock acquisition is ctx-aware.
 func (a *agent) Stream(ctx context.Context, in StreamInput) (<-chan Event, error) {
 	state := &RunState{Tools: toolInfos(a.cfg.Tools)}
 
 	// Lock the session so the entire load->run->save sequence is serialized.
 	// On synchronous failure the lock is released here; on success it is released by the goroutine.
-	var sessLock *sync.Mutex
+	// Acquisition is ctx-aware: if ctx is cancelled while waiting (e.g. a previous run on this session
+	// is still holding the lock), return the cancellation error instead of blocking forever.
+	var sessLock chan struct{}
 	if in.SessionID != "" {
 		sessLock = a.sessionLock(in.SessionID)
-		sessLock.Lock()
+		select {
+		case sessLock <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	releaseIfLocked := func() {
 		if sessLock != nil {
-			sessLock.Unlock()
+			<-sessLock
 			sessLock = nil
 		}
 	}
@@ -177,10 +194,14 @@ func (a *agent) Stream(ctx context.Context, in StreamInput) (<-chan Event, error
 	state.Messages = append(state.Messages, in.Messages...)
 
 	for _, m := range a.cfg.Middlewares {
-		if err := m.BeforeAgent(ctx, state); err != nil {
+		if err := runBeforeAgent(ctx, m, state); err != nil {
 			return nil, fmt.Errorf("before agent: %w", err)
 		}
 	}
+
+	// Carry the session ID in ctx so session-scoped tools (todo_write) can isolate their state per
+	// session. Set after BeforeAgent so it flows into the loop, tool execution, and any subagent.
+	ctx = WithSessionID(ctx, in.SessionID)
 
 	ch := make(chan Event, 8)
 	go func() {
@@ -214,13 +235,25 @@ func (a *agent) Stream(ctx context.Context, in StreamInput) (<-chan Event, error
 	return ch, nil
 }
 
+// runBeforeAgent invokes a middleware's BeforeAgent, converting any panic into an error so a buggy
+// middleware cannot crash the CLI. This mirrors the panic recovery of the worker goroutine and the
+// tool execution path, upholding the project's "no panics escape" guarantee.
+func runBeforeAgent(ctx context.Context, m Middleware, state *RunState) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("before agent middleware %T panicked: %v\n%s", m, r, debug.Stack())
+		}
+	}()
+	return m.BeforeAgent(ctx, state)
+}
+
 // ClearSession clears the history for the given session (used by REPL /clear).
 //
 // Shares the per-session lock with Stream to prevent a clear/save race that could resurrect history.
 func (a *agent) ClearSession(sessionID string) {
 	lock := a.sessionLock(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
+	lock <- struct{}{}
+	defer func() { <-lock }()
 	if err := a.store.Clear(sessionID); err != nil {
 		Warnf("session %q clear failed: %v", sessionID, err)
 	}

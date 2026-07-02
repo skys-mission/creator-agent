@@ -175,7 +175,7 @@ func TestCommandRegistryEquivalence(t *testing.T) {
 	want := map[string]bool{
 		"/help": true, "/clear": true, "/copy": true, "/compact": true, "/cost": true,
 		"/model": true, "/models": true, "/mcps": true, "/agents": true, "/variants": true,
-		"/mode": true, "/modes": true,
+		"/mode": true, "/modes": true, "/sandbox": true,
 		"/changes": true, "/diff": true,
 		"/resume": true, "/tools": true, "/themes": true,
 		"/rename": true, "/pin": true, "/new": true, "/sessions": true,

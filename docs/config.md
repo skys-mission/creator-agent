@@ -79,11 +79,14 @@ enabled = true
 dirs = []                         # 额外扫描目录（默认扫 ~/.creator/skills + 项目 ./.creator/skills）
 budget = 25000                    # 注入摘要字节预算
 
-# bash 沙箱（可选，opt-in）—— OS 级隔离
+# bash 沙箱 —— OS 级隔离（sandbox-exec(macOS) / bwrap(Linux)）
 [sandbox]
-enabled = false                   # 默认关；启用需 sandbox-exec(macOS)/bwrap(Linux)
+# enabled 三态：留空(不设) = 跟随权限模式（auto 模式默认开隔离，其余模式默认关）；
+#   显式 true/false = 用户完全接管，任何模式都遵从该值。
+# enabled = true
 mode = "filesystem"               # filesystem（默认）/ strict；保留字段，目前校验但未接线
-allow_dirs = []                   # cwd 外额外允许写的目录
+allow_dirs = []                   # cwd 外额外允许写的目录（放行口子）
+allow_network = false             # 是否放开网络（默认禁网；置 true 允许 bash 联网）
 
 # 外观（可选）—— 配色主题 + 界面语言
 [appearance]
@@ -227,6 +230,24 @@ MCP server 用独立的 **JSON** 文件配置，沿用业界通用约定 `{"mcpS
 **模型可见**：当前模式每轮注入系统提示词，模型知道边界且**不能自己切换模式**（无切换工具，只有用户能切）。在 `auto` 模式下模型也不会建议/询问切换（避免干扰）；其他模式下可建议用户切换并等待确认。
 
 > 应用层规则是尽力而为的过滤，无法防御蓄意绕过（如 `$(rm -rf /)` 命令替换、引用、eval）。强隔离需启用 `sandbox`。
+
+## 沙箱（Sandbox）—— bash 的 OS 级隔离
+
+权限模式是**应用层**过滤（判断是否询问/放行），沙箱是**操作系统层**的强隔离：把 `bash` 工具的写入限制在 cwd（+ `allow_dirs`）与临时目录内、默认切断网络，用 `sandbox-exec`(macOS) / `bwrap`(Linux) 实现。它防的是应用层挡不住的蓄意绕过（命令替换、eval、脚本自写自执）。
+
+**`enabled` 三态**（`sandbox.enabled`）：
+
+| 取值 | 含义 |
+|---|---|
+| 不设置（留空） | 跟随权限模式：`auto` 模式默认**开**隔离（因为 auto 会自动放行写/命令，用沙箱兜底），其余模式默认**关**。 |
+| `true` | 用户完全接管：任何模式都强制开隔离。 |
+| `false` | 用户完全接管：任何模式都不隔离。 |
+
+**放行口子**：`allow_dirs`（cwd 外额外可写目录）、`allow_network`（置 `true` 放开网络，默认禁网）。运行时可用 `/sandbox on|off|auto` 临时覆盖本会话（`auto` 恢复跟随策略），立即生效、无需重建。
+
+**不可用时不静默降级**：当策略要求隔离但缺 `sandbox-exec`/`bwrap`（或平台不支持）时，启动打印明确告警，且执行期 `fail-closed`——绝不在"要求隔离却无法隔离"时以非隔离方式跑 bash。要在这种环境继续，显式设 `sandbox.enabled = false` 表示接受风险。
+
+> macOS 上是**写隔离而非读隔离**（Seatbelt profile 用 `(allow file-read*)`），即沙箱内 bash 仍可读取全盘，但写入受限。
 
 ## 规则格式（permissions / hooks matcher）
 

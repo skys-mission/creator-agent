@@ -54,7 +54,7 @@ func TestReadToolNormalFile(t *testing.T) {
 	if out.IsError {
 		t.Errorf("small file should read ok: %q", out.Content)
 	}
-	if out.Content != "hello" {
+	if out.Content != "1\thello\n" {
 		t.Errorf("content mismatch: %q", out.Content)
 	}
 }

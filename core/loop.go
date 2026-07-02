@@ -23,8 +23,9 @@ import (
 //     so sendEvent would immediately drop, but the consumer may still be ranging the channel, so a non-blocking send can reach it.
 func (a *agent) runLoop(ctx context.Context, state *RunState, ch chan<- Event) {
 	for state.Step = 0; state.Step < a.cfg.MaxSteps; state.Step++ {
-		// Interrupt check: at the start of each step, test ctx (user Ctrl+C cancels ctx).
-		if errors.Is(ctx.Err(), context.Canceled) {
+		// Interrupt check: at the start of each step, test ctx. Covers both user Ctrl+C (Canceled)
+		// and request timeout (DeadlineExceeded); either finishes the run gracefully as canceled.
+		if ctxInterrupted(ctx) {
 			trySendEvent(ch, FinishEvent{Reason: FinishCanceled})
 			return
 		}
@@ -38,8 +39,9 @@ func (a *agent) runLoop(ctx context.Context, state *RunState, ch chan<- Event) {
 
 		result, err := a.runModelTurn(ctx, state, ch)
 		if err != nil {
-			// Distinguish interrupt vs real error: interrupt finishes gracefully, error is reported.
-			if errors.Is(err, context.Canceled) {
+			// Distinguish interrupt vs real error: interrupt (cancel or timeout) finishes gracefully,
+			// a real error is reported.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				trySendEvent(ch, FinishEvent{Reason: FinishCanceled})
 				return
 			}
@@ -76,9 +78,10 @@ func (a *agent) runLoop(ctx context.Context, state *RunState, ch chan<- Event) {
 			}
 		}
 
-		// Post-model ctx cancel check: the provider may cleanly close the stream on cancel without returning an error.
-		// Without this check, runModelTurn returns nil and the loop would mistakenly emit FinishStop.
-		if errors.Is(ctx.Err(), context.Canceled) {
+		// Post-model ctx cancel check: the provider may cleanly close the stream on cancel/timeout
+		// without returning an error. Without this check, runModelTurn returns nil and the loop would
+		// mistakenly emit FinishStop.
+		if ctxInterrupted(ctx) {
 			trySendEvent(ch, FinishEvent{Reason: FinishCanceled})
 			return
 		}
@@ -211,7 +214,7 @@ func (a *agent) runModelTurn(ctx context.Context, state *RunState, ch chan<- Eve
 		}
 	}
 
-	// If the stream was canceled by ctx, return the cancel error so the loop emits FinishCanceled.
+	// If the stream was canceled or timed out via ctx, return that error so the loop emits FinishCanceled.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -286,6 +289,13 @@ func isTransientError(err error) bool {
 	var rl *RateLimitedError
 	var se *ServerError
 	return errors.As(err, &rl) || errors.As(err, &se)
+}
+
+// ctxInterrupted reports whether ctx has been canceled or its deadline exceeded. Both cases are
+// treated as a graceful interrupt (FinishCanceled) rather than an error.
+func ctxInterrupted(ctx context.Context) bool {
+	err := ctx.Err()
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // sendEvent sends ev to ch; if ctx is canceled before or during the send, it returns ctx.Err().

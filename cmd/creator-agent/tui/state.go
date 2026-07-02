@@ -9,6 +9,7 @@ import (
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
 	"github.com/skys-mission/creator-agent/config"
 	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/builtins"
 	"github.com/skys-mission/creator-agent/core/middlewares"
 )
 
@@ -367,6 +368,9 @@ type runtimeState struct {
 	// modeCtl is the shared permission-mode controller (default/trust/auto/readonly); nil = legacy path.
 	modeCtl     *middlewares.ModeController
 	currentMode string // display cache of modeCtl's current mode (event-loop only, lock-free read)
+
+	// sandboxCtl is the shared sandbox override controller (/sandbox); nil = command disabled.
+	sandboxCtl *builtins.SandboxController
 
 	titleGen TitleGenerator
 

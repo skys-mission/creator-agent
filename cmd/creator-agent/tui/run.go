@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,8 +15,13 @@ import (
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
 	"github.com/skys-mission/creator-agent/config"
 	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/builtins"
 	"github.com/skys-mission/creator-agent/core/middlewares"
 )
+
+// ErrTerminalUnavailable indicates the interactive TUI could not initialize the terminal (raw mode /
+// alternate screen). Callers should degrade to the basic REPL instead of treating it as a fatal error.
+var ErrTerminalUnavailable = errors.New("interactive terminal unavailable")
 
 // RunOption configures optional TUI assembly (session store, initial session, sidebar). Defaults
 // use a MemoryStore and a freshly generated session id (a new session each launch). Using a
@@ -45,6 +51,8 @@ type runConfig struct {
 	modeCtl     *middlewares.ModeController
 	initialMode string
 
+	sandboxCtl *builtins.SandboxController
+
 	language string
 }
 
@@ -57,6 +65,13 @@ func WithModeController(m *middlewares.ModeController, initial string) RunOption
 		rc.modeCtl = m
 		rc.initialMode = initial
 	}
+}
+
+// WithSandboxController injects the shared sandbox override controller, enabling the /sandbox command
+// to toggle OS isolation for the running session. Shared with the bash tool's PolicySandbox, so a
+// toggle takes effect on the next command with no agent rebuild. nil disables the /sandbox command.
+func WithSandboxController(c *builtins.SandboxController) RunOption {
+	return func(rc *runConfig) { rc.sandboxCtl = c }
 }
 
 // WithSessionStore injects the session store used for multi-session switching (/new, /sessions).
@@ -207,6 +222,7 @@ func RunWithMiddleware(
 			currentVariant: rc.initialVariant,
 			modeCtl:        rc.modeCtl,
 			currentMode:    string(middlewares.NormalizeMode(middlewares.Mode(rc.initialMode))),
+			sandboxCtl:     rc.sandboxCtl,
 			titleGen:       rc.titleGen,
 			compactor:      rc.compactor,
 		},
@@ -217,21 +233,17 @@ func RunWithMiddleware(
 		resumeOnStart: rc.resumeOnStart,
 	}
 	a.rt.sender = func(msg any) {
-		// Approval requests must never be dropped: if the event queue is full, the approver goroutine
-		// blocks waiting for a reply that will never arrive, deadlocking the tool and leaving the UI
-		// unresponsive. Other messages remain non-blocking so a slow renderer cannot back-pressure
-		// the agent into an unbounded wait.
-		switch msg.(type) {
-		case askMsg:
-			select {
-			case a.events <- msg:
-			case <-a.quitCh:
-			}
-		default:
-			select {
-			case a.events <- msg:
-			default:
-			}
+		// No message is dropped. The event loop drains a.events continuously, so a blocking send with
+		// a quit escape both preserves streamed output (dropping deltas previously corrupted the
+		// rendered text) and guarantees approval requests reach the loop (a dropped askMsg would
+		// strand the tool waiting for a reply that never comes). The 64-slot buffer absorbs normal
+		// bursts; a genuinely slow renderer simply throttles the producer (natural flow control).
+		// Safe from self-deadlock: sender is only invoked from background goroutines (agent stream,
+		// approver, title/compact/mcp workers), never from the event-loop goroutine — those paths
+		// (e.g. publishSwitchAgent) send to a.events directly with their own non-blocking fallback.
+		select {
+		case a.events <- msg:
+		case <-a.quitCh:
 		}
 	}
 	// synchronously. The rebuild/switch factories below run on the event-loop goroutine, so a plain
@@ -306,7 +318,10 @@ func RunWithMiddleware(
 	// eliminates the CJK-terminal misalignment that cursor-advance-based renderers suffer.
 	term, err := OpenTerminal()
 	if err != nil {
-		return fmt.Errorf("init terminal: %w", err)
+		// Signal to the caller that the interactive TUI could not start because the terminal could
+		// not be put into raw/alt-screen mode. The caller degrades to the basic REPL rather than
+		// aborting, so the tool stays usable on restricted terminals.
+		return fmt.Errorf("%w: %v", ErrTerminalUnavailable, err)
 	}
 	defer term.Close()
 	// Last-resort signal cleanup: if the app is stuck in a long render or a goroutine panic

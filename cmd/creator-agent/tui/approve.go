@@ -15,12 +15,12 @@ type askMsg struct {
 
 type asyncApprover struct {
 	mu       sync.RWMutex
-	sender   func(msg any) // pushes a message into the App event queue; nil before SetSender
-	allowSet map[string]bool
+	sender   func(msg any)         // pushes a message into the App event queue; nil before SetSender
+	allowSet *middlewares.AllowSet // session-level approved invocations (shared type with the REPL approver)
 }
 
 func newAsyncApprover() *asyncApprover {
-	return &asyncApprover{allowSet: make(map[string]bool)}
+	return &asyncApprover{allowSet: middlewares.NewAllowSet()}
 }
 
 // SetSender injects the event-queue sender after assembly (the approver is built before the App).
@@ -38,18 +38,9 @@ func (a *asyncApprover) senderSnapshot() func(msg any) {
 }
 
 func (a *asyncApprover) approve(ctx context.Context, toolName, input string) bool {
-	a.mu.Lock()
-	if a.allowSet[middlewares.ApproveKey(toolName, input)] {
-		a.mu.Unlock()
+	if a.allowSet.Allowed(toolName, input) {
 		return true
 	}
-	if toolName == "write" || toolName == "edit" {
-		if a.allowSet["write"] || a.allowSet["edit"] {
-			a.mu.Unlock()
-			return true
-		}
-	}
-	a.mu.Unlock()
 
 	sender := a.senderSnapshot()
 	if sender == nil {
@@ -67,16 +58,11 @@ func (a *asyncApprover) approve(ctx context.Context, toolName, input string) boo
 }
 
 func (a *asyncApprover) remember(toolName, input string) {
-	a.mu.Lock()
-	a.allowSet[middlewares.ApproveKey(toolName, input)] = true
-	a.mu.Unlock()
+	a.allowSet.RememberExact(toolName, input)
 }
 
 func (a *asyncApprover) rememberAllEdits() {
-	a.mu.Lock()
-	a.allowSet["write"] = true
-	a.allowSet["edit"] = true
-	a.mu.Unlock()
+	a.allowSet.RememberWriteEdit()
 }
 
 var _ middlewares.AskResolver = (*asyncApprover)(nil).approve

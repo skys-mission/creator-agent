@@ -36,6 +36,14 @@ func isTTY(f *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
+// streamResult summarizes how a consumed event stream ended, so callers (headless) can map it to a
+// process exit code. Err is set when an ErrorEvent was seen; Reason is the last finish reason (empty
+// when the stream ended without one, e.g. a mid-stream error).
+type streamResult struct {
+	Reason core.FinishReason
+	Err    error
+}
+
 // printEvents consumes the event stream and writes to stdout.
 func printEvents(events <-chan core.Event) {
 	printEventsTo(events, os.Stdout)
@@ -50,7 +58,8 @@ func printEvents(events <-chan core.Event) {
 //
 // Multiple concurrent tools each occupy their own line (Start prints newline+prefix, Result appends at the end of that line and prints newline),
 // avoiding the readability issue of old ✓✗✗ piling up on one line.
-func printEventsTo(events <-chan core.Event, out io.Writer) {
+func printEventsTo(events <-chan core.Event, out io.Writer) streamResult {
+	var res streamResult
 	firstText := true
 	for ev := range events {
 		switch e := ev.(type) {
@@ -78,13 +87,37 @@ func printEventsTo(events <-chan core.Event, out io.Writer) {
 				fmt.Fprintln(out, " "+paint(cGreen, "✓"))
 			}
 		case core.FinishEvent:
+			res.Reason = e.Reason
 			if e.Reason != "" && e.Reason != "stop" {
 				fmt.Fprintf(out, "\n%s\n", paint(cYellow, "[finish: "+string(e.Reason)+"]"))
 			}
 		case core.ErrorEvent:
 			// System error: classification hint + detail, goes to out (testable)
+			res.Err = e.Err
 			fmt.Fprintf(out, "\n%s\n", paint(cRed, core.UserHint(e.Err)+truncateErr(e.Err.Error())))
 		}
+	}
+	return res
+}
+
+// headlessExitCode maps a stream result to a process exit code so headless runs are scriptable:
+//   - 0  normal completion (stop / empty reason);
+//   - 1  a system error surfaced (ErrorEvent);
+//   - 2  the step limit was hit before finishing;
+//   - 130 the run was canceled (SIGINT convention: 128 + SIGINT).
+func headlessExitCode(res streamResult) int {
+	if res.Err != nil {
+		return 1
+	}
+	switch res.Reason {
+	case core.FinishError:
+		return 1
+	case core.FinishStepLimit:
+		return 2
+	case core.FinishCanceled:
+		return 130
+	default:
+		return 0
 	}
 }
 

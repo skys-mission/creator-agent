@@ -403,6 +403,11 @@ func renderHomeLines(a *App, width int) []styledLine {
 	if vn != "" && vn != "default" {
 		ctxLine.appendRun(i18n.T("home.variant")+a.rt.currentVariant, styleToolDim())
 	}
+	// Startup mode summary: surface the active permission mode (default/trust/auto/readonly) so the
+	// trust posture is visible at a glance, matching the /mode command and the Shift+Tab cycle.
+	if m := currentModeNormalized(a); m != "" {
+		ctxLine.appendRun(i18n.T("home.mode")+m, styleToolDim())
+	}
 	out = append(out, ctxLine)
 
 	out = append(out, styledLine{})

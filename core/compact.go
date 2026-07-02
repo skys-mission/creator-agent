@@ -1,5 +1,48 @@
 package core
 
+import "context"
+
+// DefaultSummarizePrompt is the instruction appended to the compressible history when generating a
+// conversation summary. Shared by the predictive Summarization middleware and the manual /compact
+// path so both produce consistently structured summaries.
+const DefaultSummarizePrompt = `Concisely summarize the conversation above. Preserve:
+- The user's goal(s) and any constraints
+- Key decisions and their reasons
+- File names/paths that were read or modified
+- Errors encountered and how they were resolved
+- Current task state and any pending next step
+Be brief (a few short bullets). Do not include full file contents.`
+
+// CompressHistory summarizes the older portion of a message history into a single
+// "[conversation summary so far]" user message and reassembles [system, summary, recent].
+//
+// It is the single shared compaction primitive: the predictive Summarization middleware, the
+// reactive OnError path, and the manual /compact command all call it, so the partitioning
+// (pair-aware via PartitionForCompact), the summary model call, and the reassembly live in one place.
+// Callers own their own trigger/threshold policy and the "nothing to compress" handling; this helper
+// returns compressed=false (no model call made) when partitioning yields nothing to summarize.
+func CompressHistory(ctx context.Context, model ModelProvider, msgs []Message, keepRecent int, prompt string) (out []Message, compressed bool, err error) {
+	var sys []Message
+	rest := msgs
+	if len(rest) > 0 && rest[0].Role == RoleSystem {
+		sys = []Message{rest[0]}
+		rest = rest[1:]
+	}
+	toCompress, recent := PartitionForCompact(rest, keepRecent)
+	if len(toCompress) == 0 {
+		return nil, false, nil
+	}
+	summary, err := CollectText(ctx, model, append(append([]Message(nil), toCompress...), UserMessage(prompt)))
+	if err != nil {
+		return nil, false, err
+	}
+	out = make([]Message, 0, len(sys)+1+len(recent))
+	out = append(out, sys...)
+	out = append(out, UserMessage("[conversation summary so far]\n"+summary))
+	out = append(out, recent...)
+	return out, true, nil
+}
+
 // EstimateChars sums the byte length of message content, reasoning, and tool-call
 // inputs across all messages — a rough proxy for context size without a tokenizer.
 //

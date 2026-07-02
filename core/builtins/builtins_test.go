@@ -47,8 +47,8 @@ func TestReadTool(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("read failed: %+v %v", res, err)
 	}
-	if res.Content != "hello" {
-		t.Errorf("content = %q, want hello", res.Content)
+	if res.Content != "1\thello\n" {
+		t.Errorf("content = %q, want line-numbered %q", res.Content, "1\thello\n")
 	}
 
 	// Missing file -> IsError (fail-closed, no panic)

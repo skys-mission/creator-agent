@@ -59,6 +59,25 @@ jobs:
       - name: Stress test with race detector
         run: go test -race -count=10 ./...
 
+  # 真实沙箱冒烟：装 bubblewrap 后实际执行 bwrap，验证写隔离生效（非仅参数构造）
+  sandbox-smoke:
+    name: Sandbox smoke (bwrap write isolation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Sandbox smoke test
+        run: go test -tags sandboxsmoke -run TestSandboxSmoke -count=1 ./core/builtins/
+
   # macOS 跑 bash 进程组 / sandbox 等平台相关代码（darwin 路径需覆盖）
   test-macos:
     name: Test (race, macOS)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/skys-mission/creator-agent/config"
 	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/core/middlewares"
 	"github.com/skys-mission/creator-agent/paths"
 )
 
@@ -95,16 +96,38 @@ func withSessionStore() core.Option {
 	return core.WithSessionStore(store)
 }
 
+// handleREPLMode implements the REPL /mode command, the counterpart of the TUI mode picker. With no
+// argument it prints the current mode and the selectable set; with an argument it normalizes and
+// applies the mode via the shared controller, so the change takes effect on the next tool call.
+func handleREPLMode(out io.Writer, modeCtl *middlewares.ModeController, arg string) {
+	if modeCtl == nil {
+		fmt.Fprintln(out, "(permission mode control is not available in this session)")
+		return
+	}
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		fmt.Fprintf(out, "permission mode: %s (options: default, trust, auto, readonly)\n", modeCtl.Get())
+		return
+	}
+	m := middlewares.NormalizeMode(middlewares.Mode(arg))
+	modeCtl.Set(m)
+	fmt.Fprintf(out, "permission mode set to: %s\n", m)
+}
+
 // runREPL starts interactive mode: multi-turn conversation, remembers context, supports /clear /exit /help.
-func runREPL(ctx context.Context, ag core.Agent, prof config.Profile) {
-	runREPLIO(ctx, ag, prof, os.Stdin, os.Stdout)
+func runREPL(ctx context.Context, ag core.Agent, prof config.Profile, modeCtl *middlewares.ModeController) {
+	runREPLIO(ctx, ag, prof, modeCtl, os.Stdin, os.Stdout)
 }
 
 // runREPLIO is the REPL core. in/out are injectable (for testing).
 //
+// modeCtl is the shared permission-mode controller (may be nil in tests / when unavailable); when
+// present the REPL prints the active mode in its banner and supports /mode to view or change it,
+// mirroring the TUI so the primary control command behaves identically across both interactive modes.
+//
 // Input path: if in is a TTY (*os.File and isTTY) -> use readline (history/editing/Ctrl-R);
 // otherwise -> bufio (testing/pipes, zero dependencies). This keeps all 8 runREPLIO tests green.
-func runREPLIO(ctx context.Context, ag core.Agent, prof config.Profile, in io.Reader, out io.Writer) {
+func runREPLIO(ctx context.Context, ag core.Agent, prof config.Profile, modeCtl *middlewares.ModeController, in io.Reader, out io.Writer) {
 	// Each REPL launch is a fresh session (a generated "ses_..." id), mirroring the TUI's default so
 	// behavior is consistent across modes. History is reused only within a single launch (multi-turn).
 	sessionID := core.GenerateSessionID()
@@ -121,7 +144,12 @@ func runREPLIO(ctx context.Context, ag core.Agent, prof config.Profile, in io.Re
 	}
 
 	fmt.Fprintf(out, "%s · %s @ %s\n", paint(cBold, "creator-agent"), paint(cCyan, prof.Model), paint(cDim, config.HostOf(prof.BaseURL)))
-	fmt.Fprintln(out, "Interactive mode: type a question to start (multi-turn, remembers context). /help for commands, /exit to quit, Ctrl+C to interrupt current.")
+	// Startup mode summary: surface the active permission mode so the trust posture is visible at a
+	// glance, matching the TUI home screen and the /mode command.
+	if modeCtl != nil {
+		fmt.Fprintf(out, "%s %s\n", paint(cDim, "permission mode:"), paint(cCyan, string(modeCtl.Get())))
+	}
+	fmt.Fprintln(out, "Interactive mode: type a question to start (multi-turn, remembers context). /help for commands, /mode to change permission mode, /exit to quit, Ctrl+C to interrupt current.")
 
 	prompt := paint(cCyan, "\n▶ ")
 	for {
@@ -138,17 +166,23 @@ func runREPLIO(ctx context.Context, ag core.Agent, prof config.Profile, in io.Re
 			continue
 		}
 
-		switch line {
+		cmd, arg, _ := strings.Cut(line, " ")
+		switch cmd {
 		case "/exit", "/quit":
 			return
 		case "/clear":
 			ag.ClearSession(sessionID)
 			fmt.Fprintln(out, "(conversation cleared)")
 			continue
+		case "/mode", "/modes":
+			handleREPLMode(out, modeCtl, arg)
+			continue
 		case "/help":
-			fmt.Fprintln(out, "  /clear  clear conversation history")
-			fmt.Fprintln(out, "  /exit   exit")
+			fmt.Fprintln(out, "  /clear         clear conversation history")
+			fmt.Fprintln(out, "  /mode [name]   view or set the permission mode (default/trust/auto/readonly)")
+			fmt.Fprintln(out, "  /exit          exit")
 			fmt.Fprintln(out, "  other input is conversation (agent remembers context within this turn)")
+			fmt.Fprintln(out, "  (the full-screen interactive mode has many more commands: /models, /sessions, /mcps, …)")
 			continue
 		}
 

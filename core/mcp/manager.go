@@ -118,7 +118,7 @@ func newManagerWithFactory(ctx context.Context, configs []ServerConfig, factory 
 func (m *Manager) EnabledTools() []core.Tool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []core.Tool
+	var collected []serverTool
 	for _, name := range m.order {
 		ms := m.servers[name]
 		if ms == nil || !ms.enabled {
@@ -128,10 +128,13 @@ func (m *Manager) EnabledTools() []core.Tool {
 			if ms.disabledTools[t.Info().Name] {
 				continue
 			}
-			out = append(out, t)
+			collected = append(collected, serverTool{server: name, tool: t})
 		}
 	}
-	return out
+	// Namespace only the names that collide across enabled servers (server__tool); unique names stay
+	// short. The set is recomputed each call so a runtime enable/disable that removes a collision
+	// restores the short name.
+	return namespaceCollisions(collected)
 }
 
 // SetEnabled toggles a server's contribution to the active tool set.

@@ -5,7 +5,7 @@
 ```
 cmd/creator-agent/   # CLI 入口（main + repl + headless + setup + tui/ + agents/approve/compact/mcp/tools/title/cleanup/ui）
 core/                # 核心库（agent loop / 工具 / 中间件 / 防腐层）
-  ├── adapters/openai/  # 防腐层（唯一碰 openai-go）
+  ├── adapters/         # 防腐层（唯一碰 SDK）：openai-chat / openai-responses / anthropic + shared
   ├── builtins/         # 内置工具（read/write/edit/bash/grep/glob + task + skill + todo + sandbox）
   ├── mcp/              # MCP client adapter（连外部 MCP server 取工具）
   └── middlewares/      # agentsmd / microcompact / permission / summarization / reactive / userhooks / skills / automemory（+ cache/compress/system_inject 为支撑文件）
@@ -69,7 +69,7 @@ Stream(ctx, input)
 
 ## Session 持久化
 
-`SessionStore` 接口：`MemoryStore`（内存）/ `JSONFileStore`（`~/.creator/sessions/<id>.json`，原子写 + 进程内 mutex + 目录 flock + 路径穿越防护）。REPL/TUI 用 `JSONFileStore`（sessionID 固定 `repl`），跨重启保留对话；headless 无状态。
+`SessionStore` 接口：`MemoryStore`（内存）/ `JSONFileStore`（`~/.creator/sessions/<id>.json`，原子写 + 进程内 mutex + 目录 flock + 路径穿越防护 + schema `version` 字段）。REPL/TUI 用 `JSONFileStore`，每次启动生成新 `ses_…` id（`-c` 续接最近、`-r` 启动弹选择器），跨重启保留对话；headless 无状态。会话作用域工具（如 `todo_write`）从 ctx 取当前 sessionID 隔离状态。
 
 ## 子会话（RunForked）
 

@@ -7,20 +7,32 @@
 #      /history/trace all stay self-contained (your repo and ~/.creator untouched)
 #   3. removes the whole sandbox on exit (normal, error, or Ctrl-C)
 #
-# The API key never lands on disk: it is read from the real config and injected
-# via OPENAI_API_KEY; the sandbox copy of the config has api_key stripped.
+# Two config modes:
+#   - default: copies the real config (api_key stripped; key injected via env) so
+#     the agent runs against your real profile/models. The key never lands on disk.
+#   - CA_BLANK: starts from a truly EMPTY config (no config.toml, no injected key)
+#     so the agent hits first-run setup (NeedsSetup). Use this to exercise the
+#     setup wizard / non-TTY text guide. On a TTY the full-screen wizard runs; with
+#     a "--" prompt (non-TTY) the text guide prints and the agent exits.
 #
 # Usage:
 #   scripts/dev-sandbox.sh                  # interactive TUI in a fresh sandbox
 #   scripts/dev-sandbox.sh -- "your prompt" # headless one-shot in a fresh sandbox
 #   make dev-sandbox                        # same, via Makefile
+#   CA_BLANK=1 scripts/dev-sandbox.sh       # empty config -> first-run setup
+#   make dev-blank                          # same, via Makefile
 #
 # Env:
-#   CA_MODE  permission mode: default (default) | trust | auto | readonly | sandbox
-#            (sandbox = OS-level sandbox-exec/bwrap + writes allowed inside only)
-#   CA_KEEP  if set to a name, preserve the sandbox at ~/.cache/dev-sandboxes/<name>
-#            instead of deleting on exit (to resume a session later)
-#   CA_BIN   use this executable instead of compiling into the sandbox
+#   CA_MODE   permission mode: default (default) | trust | auto | readonly | sandbox
+#             (sandbox = OS-level sandbox-exec/bwrap + writes allowed inside only)
+#             Ignored under CA_BLANK (no config to write [permissions] into).
+#   CA_KEEP   if set to a name, preserve the sandbox at ~/.cache/dev-sandboxes/<name>
+#             instead of deleting on exit (to resume a session later). Under CA_BLANK
+#             a kept sandbox already holds the config written by setup, so reruns no
+#             longer trigger the wizard — drop the sandbox or rename first.
+#   CA_BIN    use this executable instead of compiling into the sandbox
+#   CA_BLANK  if non-empty, start from an empty config (first-run setup) instead of
+#             copying the real config
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +42,7 @@ REAL_XDG="${XDG_CONFIG_HOME:-}"
 
 MODE="${CA_MODE:-default}"
 PMODE="$MODE"; [[ "$MODE" == "sandbox" ]] && PMODE="auto"
+BLANK="${CA_BLANK:-}"
 
 die() { printf 'dev-sandbox: %s\n' "$*" >&2; exit 1; }
 
@@ -163,26 +176,41 @@ fi
 
 CFG_DIR="$SANDBOX/.creator"
 CFG="$CFG_DIR/config.toml"
-mkdir -p "$CFG_DIR"
 
-# Locate the real config; copy it with api_key stripped. The key is injected via
-# env below, so the sandbox holds no secret.
-real_cfg="$(global_config_path)"
-if [[ -f "$real_cfg" ]]; then
-	sed -E 's/^[[:space:]]*api_key[[:space:]]*=.*/api_key = ""/' "$real_cfg" > "$CFG"
-	if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-		KEY="$(extract_api_key "$real_cfg" || true)"
-		[[ -n "$KEY" ]] && export OPENAI_API_KEY="$KEY"
+if [[ -n "$BLANK" ]]; then
+	# CA_BLANK: start from a truly empty config so the agent enters first-run setup
+	# (NeedsSetup = no config.toml + no OPENAI_API_KEY + no -api-key flag). Do NOT
+	# copy the real config, write a stub, or inject any key — any of those suppress
+	# the setup wizard, which is the thing under test. diag.Setup() will mkdir
+	# $CFG_DIR for crash logs on its own; that is harmless because NeedsSetup keys
+	# only off config.toml, which we intentionally never create.
+	unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL CREATOR_AGENT_TYPE CREATOR_AGENT_REQUEST_TIMEOUT
+	if [[ "$KEEP" -eq 1 ]]; then
+		printf 'dev-sandbox: CA_BLANK + CA_KEEP: the kept sandbox already holds the config\n' >&2
+		printf '             written by setup, so reruns will not trigger the wizard. Remove\n' >&2
+		printf '             the sandbox or use a fresh CA_KEEP name to test setup again.\n' >&2
 	fi
-elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
-	# No real config but a key is already in env: synthesize a permissions-only file.
-	printf '[permissions]\nmode = "%s"\n' "$PMODE" > "$CFG"
 else
-	die "no config at $(global_config_path) and no OPENAI_API_KEY; run creator-agent setup first."
-fi
+	mkdir -p "$CFG_DIR"
+	# Locate the real config; copy it with api_key stripped. The key is injected via
+	# env below, so the sandbox holds no secret.
+	real_cfg="$(global_config_path)"
+	if [[ -f "$real_cfg" ]]; then
+		sed -E 's/^[[:space:]]*api_key[[:space:]]*=.*/api_key = ""/' "$real_cfg" > "$CFG"
+		if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+			KEY="$(extract_api_key "$real_cfg" || true)"
+			[[ -n "$KEY" ]] && export OPENAI_API_KEY="$KEY"
+		fi
+	elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+		# No real config but a key is already in env: synthesize a permissions-only file.
+		printf '[permissions]\nmode = "%s"\n' "$PMODE" > "$CFG"
+	else
+		die "no config at $(global_config_path) and no OPENAI_API_KEY; run creator-agent setup first."
+	fi
 
-os_sandbox=0; [[ "$MODE" == "sandbox" ]] && os_sandbox=1
-apply_dev_overrides "$CFG" "$PMODE" "$os_sandbox" "$SANDBOX"
+	os_sandbox=0; [[ "$MODE" == "sandbox" ]] && os_sandbox=1
+	apply_dev_overrides "$CFG" "$PMODE" "$os_sandbox" "$SANDBOX"
+fi
 
 # Auto-compile: fresh binary into the sandbox, removed together with it. CA_BIN
 # overrides the build with a prebuilt binary (fast iteration, or a stub for tests).
@@ -193,8 +221,9 @@ else
 	( cd "$PROJECT_ROOT" && go build -o "$BIN" ./cmd/creator-agent )
 fi
 
-printf 'dev-sandbox: %s (mode=%s, keep=%s)\n' "$SANDBOX" "$MODE" "$([[ $KEEP -eq 1 ]] && echo yes || echo no)" >&2
+printf 'dev-sandbox: %s (mode=%s, keep=%s, blank=%s)\n' "$SANDBOX" "$MODE" "$([[ $KEEP -eq 1 ]] && echo yes || echo no)" "$([[ -n "$BLANK" ]] && echo yes || echo no)" >&2
 [[ "$KEEP" -eq 0 ]] && printf 'dev-sandbox: sandbox will be removed on exit\n' >&2
+[[ -n "$BLANK" ]] && printf 'dev-sandbox: empty config -> first-run setup (TTY: wizard | --: text guide)\n' >&2
 
 # Run: HOME= and cwd= the sandbox => every path under DataDir() is self-contained.
 cd "$SANDBOX"

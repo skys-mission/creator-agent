@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 
 	"github.com/skys-mission/creator-agent/core/middlewares"
 )
@@ -23,8 +22,7 @@ type replApprover struct {
 	in  *bufio.Reader // approval response input (not readline, simple y/a/n)
 	out io.Writer
 
-	mu       sync.Mutex
-	allowSet map[string]bool // session-level approved tool names
+	allowSet *middlewares.AllowSet // session-level approved invocations (shared type with the TUI approver)
 }
 
 // newReplApprover constructs. in/out are injectable (for testing).
@@ -32,7 +30,7 @@ func newReplApprover(in io.Reader, out io.Writer) *replApprover {
 	return &replApprover{
 		in:       bufio.NewReader(in),
 		out:      out,
-		allowSet: make(map[string]bool),
+		allowSet: middlewares.NewAllowSet(),
 	}
 }
 
@@ -40,19 +38,9 @@ func newReplApprover(in io.Reader, out io.Writer) *replApprover {
 // Note: dumb REPL uses bufio blocking read, does not respond to ctx (non-TTY test path);
 // when ctx is canceled the process exits as a whole.
 func (a *replApprover) approve(_ context.Context, toolName, input string) bool {
-	key := middlewares.ApproveKey(toolName, input)
-	a.mu.Lock()
-	if a.allowSet[key] {
-		a.mu.Unlock()
+	if a.allowSet.Allowed(toolName, input) {
 		return true
 	}
-	if toolName == "write" || toolName == "edit" {
-		if a.allowSet["write"] || a.allowSet["edit"] {
-			a.mu.Unlock()
-			return true
-		}
-	}
-	a.mu.Unlock()
 
 	// prompt for approval
 	fmt.Fprintf(a.out, "\n%s tool %q wants to execute: %s\n",
@@ -73,15 +61,11 @@ func (a *replApprover) approve(_ context.Context, toolName, input string) bool {
 		fmt.Fprintln(a.out, paint(cGreen, "(allowed once)"))
 		return true
 	case "a", "always":
-		a.mu.Lock()
-		switch toolName {
-		case "write", "edit":
-			a.allowSet["write"] = true
-			a.allowSet["edit"] = true
-		default:
-			a.allowSet[key] = true
+		if toolName == "write" || toolName == "edit" {
+			a.allowSet.RememberWriteEdit()
+		} else {
+			a.allowSet.RememberExact(toolName, input)
 		}
-		a.mu.Unlock()
 		fmt.Fprintf(a.out, "%s\n", paint(cGreen, "(allowed for this session)"))
 		return true
 	default:

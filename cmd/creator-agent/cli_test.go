@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -224,7 +225,7 @@ func TestRunHeadlessPrintsEvents(t *testing.T) {
 		core.FinishEvent{Reason: core.FinishStop},
 	}}
 	var buf bytes.Buffer
-	runHeadlessIO(context.Background(), ag, "hi", &buf)
+	runHeadlessIO(context.Background(), ag, "hi", &buf, false)
 	if ag.streamCalls != 1 {
 		t.Errorf("Stream called %d times, want 1", ag.streamCalls)
 	}
@@ -247,6 +248,70 @@ func TestRunHeadlessPrintsEvents(t *testing.T) {
 // Verify: headless on Stream error calls die (os.Exit) — too heavy for a subprocess test,
 // here we only verify that ag is called and does not panic (die is untestable, skip exit verification).
 
+// Verify: headless -json emits a single structured object and a stop finish yields exit code 0.
+func TestHeadlessJSONOutput(t *testing.T) {
+	useColor = false
+	ag := &mockAgent{events: []core.Event{
+		core.TextEvent{Delta: "hello "},
+		core.TextEvent{Delta: "world"},
+		core.ToolUseStartEvent{Name: "read"},
+		core.ToolResultEvent{Result: core.ToolResult{Content: "ok"}},
+		core.UsageEvent{Usage: core.Usage{InputTokens: 5, OutputTokens: 2}},
+		core.FinishEvent{Reason: core.FinishStop},
+	}}
+	var buf bytes.Buffer
+	code := runHeadlessIO(context.Background(), ag, "hi", &buf, true)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	var doc struct {
+		Text         string `json:"text"`
+		FinishReason string `json:"finish_reason"`
+		Tools        []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+		Usage *core.Usage `json:"usage"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if doc.Text != "hello world" {
+		t.Errorf("text = %q, want %q", doc.Text, "hello world")
+	}
+	if doc.FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", doc.FinishReason)
+	}
+	if len(doc.Tools) != 1 || doc.Tools[0].Name != "read" {
+		t.Errorf("tools = %+v, want one read", doc.Tools)
+	}
+	if doc.Usage == nil || doc.Usage.InputTokens != 5 {
+		t.Errorf("usage not captured: %+v", doc.Usage)
+	}
+}
+
+// Verify: finish-reason exit-code mapping is scriptable and stable.
+func TestHeadlessExitCodes(t *testing.T) {
+	cases := []struct {
+		reason core.FinishReason
+		err    error
+		want   int
+	}{
+		{core.FinishStop, nil, 0},
+		{core.FinishStepLimit, nil, 2},
+		{core.FinishCanceled, nil, 130},
+		{core.FinishError, nil, 1},
+		{"", errTest, 1},
+	}
+	for _, c := range cases {
+		got := headlessExitCode(streamResult{Reason: c.reason, Err: c.err})
+		if got != c.want {
+			t.Errorf("exit code for reason=%q err=%v = %d, want %d", c.reason, c.err, got, c.want)
+		}
+	}
+}
+
+var errTest = errors.New("boom")
+
 // ===== runREPLIO command routing =====
 
 // Verify: /exit exits immediately (does not call Stream).
@@ -254,7 +319,7 @@ func TestREPLExit(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, strings.NewReader("/exit\n"), &out)
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil, strings.NewReader("/exit\n"), &out)
 	if ag.streamCalls != 0 {
 		t.Errorf("Stream should not be called for /exit: %d", ag.streamCalls)
 	}
@@ -265,7 +330,7 @@ func TestREPLClear(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader("/clear\n/exit\n"), &out)
 	if len(ag.cleared) != 1 || !strings.HasPrefix(ag.cleared[0], "ses_") {
 		t.Errorf("ClearSession not called for the session id: %v", ag.cleared)
@@ -283,7 +348,7 @@ func TestREPLHelp(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader("/help\n/exit\n"), &out)
 	if !strings.Contains(out.String(), "/clear") || !strings.Contains(out.String(), "/exit") {
 		t.Errorf("help text missing: %q", out.String())
@@ -295,7 +360,7 @@ func TestREPLNormalInput(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{core.FinishEvent{Reason: core.FinishStop}}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader("hello world\n/exit\n"), &out)
 	if ag.streamCalls != 1 {
 		t.Fatalf("Stream calls = %d, want 1", ag.streamCalls)
@@ -313,7 +378,7 @@ func TestREPLEmptyLineSkipped(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader("\n  \n/exit\n"), &out)
 	if ag.streamCalls != 0 {
 		t.Errorf("empty lines should not call Stream: %d", ag.streamCalls)
@@ -325,7 +390,7 @@ func TestREPLEOF(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader(""), &out) // empty reader -> immediate EOF
 	if ag.streamCalls != 0 {
 		t.Errorf("EOF should not call Stream: %d", ag.streamCalls)
@@ -337,7 +402,7 @@ func TestREPLMultiTurnSessionConsistent(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{core.FinishEvent{Reason: core.FinishStop}}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "m"}, nil,
 		strings.NewReader("q1\nq2\n/exit\n"), &out)
 	if ag.streamCalls != 2 {
 		t.Fatalf("Stream calls = %d, want 2", ag.streamCalls)
@@ -372,7 +437,7 @@ func TestREPLTurnCtxNotCanceledDuringStream(t *testing.T) {
 	wrapped := &ctxSamplingAgent{inner: ag, sampleCh: midStreamErr}
 
 	var out bytes.Buffer
-	runREPLIO(context.Background(), wrapped, config.Profile{Model: "m"},
+	runREPLIO(context.Background(), wrapped, config.Profile{Model: "m"}, nil,
 		strings.NewReader("hello\n/exit\n"), &out)
 
 	// Text must reach the consumer (proves the turn completed normally).
@@ -424,7 +489,7 @@ func TestREPLBanner(t *testing.T) {
 	useColor = false
 	ag := &mockAgent{events: []core.Event{}}
 	var out bytes.Buffer
-	runREPLIO(context.Background(), ag, config.Profile{Model: "deepseek-chat", BaseURL: "https://api.deepseek.com"},
+	runREPLIO(context.Background(), ag, config.Profile{Model: "deepseek-chat", BaseURL: "https://api.deepseek.com"}, nil,
 		strings.NewReader("/exit\n"), &out)
 	banner := out.String()
 	if !strings.Contains(banner, "deepseek-chat") {
@@ -459,9 +524,9 @@ func TestFirstRunGuide(t *testing.T) {
 	got := firstRunGuide("/home/u/.creator/config.toml")
 	for _, want := range []string{
 		"/home/u/.creator/config.toml", // config file path
-		"api_key",                            // field to change
-		"OPENAI_API_KEY",                     // env var alternative
-		"1.", "2.", "3.",                     // three-step guidance
+		"api_key",                      // field to change
+		"OPENAI_API_KEY",               // env var alternative
+		"1.", "2.", "3.",               // three-step guidance
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("firstRunGuide missing %q, got:\n%s", want, got)

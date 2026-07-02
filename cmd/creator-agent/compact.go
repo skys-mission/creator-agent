@@ -29,41 +29,17 @@ func compactMessages(ctx context.Context, provider core.ModelProvider, msgs []co
 	if len(msgs) < minMessagesToCompact {
 		return msgs, false, nil
 	}
-	var sys []core.Message
-	rest := msgs
-	if len(rest) > 0 && rest[0].Role == core.RoleSystem {
-		sys = []core.Message{rest[0]}
-		rest = rest[1:]
+	// Delegate to the shared compaction primitive (same partitioning + prompt as the Summarization
+	// middleware), so manual /compact and automatic compaction never drift apart.
+	compressed, did, cerr := core.CompressHistory(ctx, provider, msgs, keepRecentCompact, core.DefaultSummarizePrompt)
+	if cerr != nil {
+		return nil, false, fmt.Errorf("summarize history: %w", cerr)
 	}
-	toCompress, recent := core.PartitionForCompact(rest, keepRecentCompact)
-	if len(toCompress) == 0 {
+	if !did {
 		return msgs, false, nil
 	}
-	summary, serr := summarizeForCompact(ctx, provider, toCompress)
-	if serr != nil {
-		return nil, false, fmt.Errorf("summarize history: %w", serr)
-	}
-	compressed := make([]core.Message, 0, len(sys)+1+len(recent))
-	compressed = append(compressed, sys...)
-	compressed = append(compressed, core.UserMessage("[conversation summary so far]\n"+summary))
-	compressed = append(compressed, recent...)
 	return compressed, true, nil
 }
-
-// summarizeForCompact calls the model to compress old messages into a summary string (mirrors
-// middlewares/summarization.summarize + its prompt).
-func summarizeForCompact(ctx context.Context, provider core.ModelProvider, msgs []core.Message) (string, error) {
-	req := append(append([]core.Message(nil), msgs...), core.UserMessage(summarizePromptText))
-	return core.CollectText(ctx, provider, req)
-}
-
-const summarizePromptText = `Concisely summarize the conversation above. Preserve:
-- The user's goal(s) and any constraints
-- Key decisions and their reasons
-- File names/paths that were read or modified
-- Errors encountered and how they were resolved
-- Current task state and any pending next step
-Be brief (a few short bullets). Do not include full file contents.`
 
 // newCompactFactory builds a tui.Compactor that compacts a session's stored history. It reads the
 // provider live (so /model switches are picked up) and persists the compacted messages via the

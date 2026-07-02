@@ -58,6 +58,11 @@ func TestSplitBashCommand(t *testing.T) {
 		{"a &&  && b", []string{"a", "b"}}, // empty segments ignored
 		{"", nil},                          // empty
 		{"   ", nil},                       // all whitespace
+		// A5: single '&' (background) splits, but '&>' / '>&' redirects are preserved intact.
+		{"a & b", []string{"a", "b"}},
+		{"sleep 1 & echo done", []string{"sleep 1", "echo done"}},
+		{"echo x &> out.log", []string{"echo x &> out.log"}},
+		{"echo x >& out.log", []string{"echo x >& out.log"}},
 	}
 	for _, c := range cases {
 		got := splitBashCommand(c.in)
@@ -168,6 +173,40 @@ func TestPermissionDeny(t *testing.T) {
 	if tool.n != 0 {
 		t.Errorf("denied tool was called: n=%d", tool.n)
 	}
+}
+
+// TestPermissionCommandSubstitutionUpgrade is an A5 security regression: a command that would match
+// an allow rule but embeds command/process substitution ($()/backticks) must NOT be auto-allowed —
+// the static splitter cannot see inside the substitution, so the decision is upgraded to ask. With
+// no resolver configured, ask degrades to deny, and the tool must not run.
+func TestPermissionCommandSubstitutionUpgrade(t *testing.T) {
+	mw := NewPermission(PermissionConfig{
+		Allow: []string{"bash:echo *"},
+	})
+	tool := &countTool{}
+	wrapped := mw.WrapTool("bash", func(ctx context.Context, in json.RawMessage) (core.ToolResult, error) {
+		tool.n++
+		return core.ToolResult{Content: "ran"}, nil
+	})
+	for _, cmd := range []string{`echo $(rm -rf /tmp/x)`, "echo `whoami`"} {
+		tool.n = 0
+		res, err := wrapped(context.Background(), json.RawMessage(`{"command":`+jsonString(cmd)+`}`))
+		if err != nil {
+			t.Fatalf("cmd %q: %v", cmd, err)
+		}
+		if !res.IsError {
+			t.Errorf("cmd %q: substitution should upgrade allow->ask and (no resolver) deny", cmd)
+		}
+		if tool.n != 0 {
+			t.Errorf("cmd %q: tool ran despite substitution upgrade (n=%d)", cmd, tool.n)
+		}
+	}
+}
+
+// jsonString quotes s as a JSON string literal for inline test payloads.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // TestPermissionCompoundDenyBypass verifies that a compound command containing a denied subcommand is denied overall.

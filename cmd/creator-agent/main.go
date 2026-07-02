@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -28,43 +29,12 @@ import (
 	"github.com/skys-mission/creator-agent/core/builtins"
 	"github.com/skys-mission/creator-agent/core/mcp"
 	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/internal/prompts"
 )
 
-const systemPrompt = `You are creator-agent, an open-source coding agent (Go).
-
-You help with software tasks in the user's current project. You can call tools to read/edit/run code.
-
-Available tools:
-- read: read a file's content
-- write: create or overwrite a file
-- edit: edit a file (replace a unique old_string with new_string)
-- bash: run a shell command
-- grep: search file contents (regex)
-- glob: find files by name pattern (supports **)
-- task: delegate a sub-task to a read-only sub-agent (keeps the main context clean by returning only a conclusion)
-- skill: load a named skill's full body when its frontmatter indicates it fits the task
-- todo_write: manage the task progress list (planned/pending/in_progress/completed)
-
-When to use tools vs just reply:
-- If the user's message is a clear, actionable request (e.g. "refactor X", "fix the bug in Y", "add a test for Z", "what does file W do"), act on it with tools.
-- If the message is ambiguous, a bare value (e.g. "111", "yes", "ok"), or a conversational reply, DO NOT invent a task. Ask for clarification or respond in conversation.
-- Never fabricate file paths, content, or commands. If you don't know what the user wants, ask.
-
-Rules:
-- Be concise; no preamble before acting.
-- Read before editing; never guess file contents.
-- When done with a task, give a brief summary of what you did.
-
-Using todo_write (task tracking) — status semantics decide whether you PLAN or EXECUTE:
-- "planned" = proposed but NOT committed (you are only listing ideas/options, e.g. "find something to do", "evaluate options"). Do NOT start working on planned items.
-- "pending" = confirmed to do, queued. The plan is locked in and you will execute it.
-- "in_progress" = doing it right now. "completed" = done.
-
-Two modes — pick by what the user asked:
-1. EXECUTE mode (user gave a clear, actionable task like "refactor X", "fix bug Y"): FIRST call todo_write with the full plan, first item "in_progress" and the rest "pending". Then immediately start executing. Update the list as each step finishes (mark "completed", next "in_progress"). Keep EXACTLY ONE "in_progress" at a time. Never leave work with zero "in_progress" while items remain.
-2. PLAN mode (user asked to "list ideas / find something to do / evaluate / propose options" with no instruction to act): call todo_write with all items "planned". Then STOP and present the plan to the user. Do not start executing until the user picks something. Transitioning "planned" -> "pending" happens only when the user (or you, after they confirm) commits to doing it.
-
-Rules: pass the FULL list each time (replacement, not incremental). Do NOT use todo_write for simple tasks (1-2 steps) or conversational replies — it adds noise. Never mark something "completed" that you did not actually do.`
+// systemPrompt is the default build agent's system prompt, sourced from internal/prompts so the
+// (large) text lives in one reviewable place. Aliased here to keep the many in-package references terse.
+const systemPrompt = prompts.System
 
 func main() {
 	defer recoverMain()
@@ -74,6 +44,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  creator-agent                  interactive mode (starts a new session each launch)\n")
 		fmt.Fprintf(os.Stderr, "  creator-agent \"your prompt\"    headless one-shot (write operations are blocked)\n")
+		fmt.Fprintf(os.Stderr, "  creator-agent -json \"...\"      headless one-shot with a single JSON result (scriptable; exit code reflects finish reason)\n")
 		fmt.Fprintf(os.Stderr, "  creator-agent -profile openai  use the specified profile\n")
 		fmt.Fprintf(os.Stderr, "  creator-agent -c               continue the most recent session\n")
 		fmt.Fprintf(os.Stderr, "  creator-agent -r               resume a session via the picker on startup\n\n")
@@ -97,6 +68,7 @@ func main() {
 	flag.BoolVar(&continueLast, "continue", false, "continue the most recent session (TUI mode)")
 	flag.BoolVar(&resumePick, "r", false, "resume a session via the picker on startup (TUI mode)")
 	flag.BoolVar(&resumePick, "resume", false, "resume a session via the picker on startup (TUI mode)")
+	jsonOut := flag.Bool("json", false, "headless mode: emit a single JSON result object instead of streamed text")
 	flag.Parse()
 
 	// Crash-safety supervisor (interactive TUI only): run the real TUI as a child process so the
@@ -132,9 +104,11 @@ func main() {
 				die(werr)
 			}
 			if !res.Confirmed {
+				// User aborted setup: print the manual guide and exit non-zero so scripts/CI can tell
+				// that configuration did not complete (a clean exit 0 would look like success).
 				gp, _ := config.GlobalConfigPath()
 				fmt.Print(firstRunGuide(gp))
-				return
+				exitWith(2)
 			}
 			path, werr := config.WriteInitialConfig(res.Profile, res.ProfileName)
 			if werr != nil {
@@ -144,6 +118,9 @@ func main() {
 			if cfg, err = config.Load(); err != nil {
 				die(err)
 			}
+			// Best-effort connection probe: give first-run users immediate feedback that their key +
+			// endpoint actually work, instead of discovering it on the first prompt. Never fatal.
+			probeConnection(res.Profile)
 		} else {
 			if path, _ := config.EnsureConfigFile(); path != "" {
 				fmt.Print(firstRunGuide(path))
@@ -181,10 +158,28 @@ func main() {
 		die(err)
 	}
 
-	// sandbox (opt-in): when enabled, choose sandbox-exec/bwrap by GOOS; missing binary fails closed.
-	sandbox, sandboxErr := builtins.NewSandbox(cfg.Sandbox.Enabled, cfg.Sandbox.AllowDirs)
-	if sandboxErr != nil {
-		die(sandboxErr)
+	// Permission mode controller (default/trust/auto/readonly): seeded from config, shared with the
+	// permission middleware, the sandbox policy, and the TUI so a runtime /mode switch takes effect on
+	// the next tool call without rebuilding the agent.
+	modeCtl := middlewares.NewModeController(middlewares.Mode(cfg.Permissions.NormalizedMode()))
+
+	// OS sandbox for the bash tool. Isolation is policy-driven: an explicit sandbox.enabled wins in
+	// any mode; otherwise "auto" mode isolates and the others do not. A runtime /mode switch or the
+	// /sandbox override is honored on the next command without rebuilding the agent. The OS binary is
+	// probed once here; when isolation is required but unavailable, PolicySandbox fails closed at exec
+	// time (never runs unsandboxed after isolation was requested).
+	sandboxCtl := builtins.NewSandboxController()
+	osSandbox, sandboxAvailable := builtins.NewOSSandbox(cfg.Sandbox.AllowDirs, !cfg.Sandbox.AllowNetwork)
+	sandbox := builtins.NewPolicySandbox(func() bool {
+		if ov := sandboxCtl.Override(); ov != nil {
+			return *ov
+		}
+		return cfg.Sandbox.ResolveEnabled(string(modeCtl.Get()))
+	}, osSandbox, builtins.SandboxUnavailableHint())
+	if !sandboxAvailable && cfg.Sandbox.ResolveEnabled(string(modeCtl.Get())) {
+		// Non-fatal early warning: isolation is currently requested but unavailable. Enforcement stays
+		// fail-closed at command time; the user can install the dependency or set sandbox.enabled=false.
+		fmt.Fprintf(os.Stderr, "warn: OS sandbox requested but unavailable: %s\n", builtins.SandboxUnavailableHint())
 	}
 
 	// MCP servers are connected once at startup via a Manager that tracks per-server state, so the
@@ -238,11 +233,6 @@ func main() {
 	for i, t := range allTools {
 		toolInfos[i] = t.Info()
 	}
-
-	// Permission mode controller (default/trust/auto/readonly): seeded from config, shared with the
-	// permission middleware and the TUI so a runtime /mode switch takes effect on the next tool call
-	// without rebuilding the agent.
-	modeCtl := middlewares.NewModeController(middlewares.Mode(cfg.Permissions.NormalizedMode()))
 
 	// Assemble agent closure (different modes use different resolvers).
 	// Extracted because TUI mode needs asyncApprover (channel handshake), while dumb/headless use synchronous resolvers.
@@ -383,9 +373,14 @@ func main() {
 	}
 	switch {
 	case len(args) > 0:
-		// headless: deny resolver + raw output (unchanged)
+		// headless: deny resolver + raw output. Give it a SIGINT-aware context so Ctrl+C on a cooked
+		// terminal cancels the run gracefully (FinishCanceled + cleanup) instead of a hard abort that
+		// skips deferred cleanup. This is scoped to headless so it does not collide with the REPL's
+		// per-turn SIGINT handling or the TUI's raw-mode key handling.
+		hctx, hstop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer hstop()
 		ag := buildAgent(headlessApprover{}.approve)
-		runHeadless(ctx, ag, strings.Join(args, " "))
+		runHeadless(hctx, ag, strings.Join(args, " "), *jsonOut)
 
 	case isTTY(os.Stdin) && isTTY(os.Stdout):
 		// REPL + real TTY -> self-built full-screen TUI (asyncApprover + channel handshake approval)
@@ -431,6 +426,9 @@ func main() {
 			// Permission mode (default/trust/auto/readonly): the controller is shared with the
 			// permission middleware, so /mode switching takes effect on the next tool call.
 			tui.WithModeController(modeCtl, cfg.Permissions.NormalizedMode()),
+			// Sandbox override (/sandbox on|off|auto): shared with the bash PolicySandbox, so a toggle
+			// takes effect on the next command with no agent rebuild.
+			tui.WithSandboxController(sandboxCtl),
 			// Auto session title: inject a generator that reads the current provider through a closure
 			// (so /model and /variants switches, which rebuild the provider, are picked up with no
 			// re-injection). nil when no provider — auto-titling is then disabled gracefully.
@@ -440,16 +438,73 @@ func main() {
 			// UI language: config-driven or locale auto-detected.
 			tui.WithLanguage(cfg.Appearance.NormalizedLanguage()),
 		); err != nil {
-			fmt.Fprintln(os.Stderr, "tui error:", err)
-			exitWith(1) // go through cleanup, not bare os.Exit
+			// When the terminal cannot be initialized (raw/alt-screen unavailable), degrade to the
+			// basic REPL instead of aborting, so the tool stays usable on restricted terminals.
+			if errors.Is(err, tui.ErrTerminalUnavailable) {
+				fmt.Fprintln(os.Stderr, "notice: interactive TUI unavailable, falling back to basic REPL:", err)
+				runDumbREPL(ctx, buildAgent, prof, modeCtl)
+			} else {
+				fmt.Fprintln(os.Stderr, "tui error:", err)
+				exitWith(1) // go through cleanup, not bare os.Exit
+			}
 		}
 
 	default:
-		// REPL + non-TTY (pipes/testing) -> dumb readline path (unchanged)
-		ap := newReplApprover(os.Stdin, os.Stdout)
-		ag := buildAgent(ap.approve)
-		runREPL(ctx, ag, prof)
+		// REPL + non-TTY (pipes/testing) -> dumb readline path
+		runDumbREPL(ctx, buildAgent, prof, modeCtl)
 	}
+}
+
+// probeConnectionTimeout bounds the first-run connection test so a misconfigured or unreachable
+// endpoint cannot hang the setup flow.
+const probeConnectionTimeout = 20 * time.Second
+
+// probeConnection performs a best-effort "test connection" after first-run setup: it builds a
+// provider from the freshly written profile and sends a tiny prompt, reporting OK or the classified
+// failure to stderr. It is never fatal — a transient failure should not block the user from
+// starting — and caps output tokens to keep the probe cheap.
+func probeConnection(prof config.Profile) {
+	fmt.Fprint(os.Stderr, "Testing connection... ")
+	ctx, cancel := context.WithTimeout(context.Background(), probeConnectionTimeout)
+	defer cancel()
+	provider, err := buildProvider(ctx, prof, probeConnectionTimeout, normalizeVariantName(prof.Variant))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "skipped (provider init failed: %v)\n", err)
+		return
+	}
+	maxTokens := 8
+	stream, err := provider.Stream(ctx, core.ModelRequest{
+		Messages:  []core.Message{core.UserMessage("ping")},
+		MaxTokens: &maxTokens,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAILED: %s%v\n", core.UserHint(err), err)
+		return
+	}
+	for ev := range stream {
+		if me, ok := ev.(core.MError); ok {
+			fmt.Fprintf(os.Stderr, "FAILED: %s%v\n", core.UserHint(me.Err), me.Err)
+			return
+		}
+		// Any non-error event means the endpoint accepted the request and started responding; that is
+		// enough to confirm the key + base URL + model are valid. Stop early (defer cancel closes the
+		// stream) so the probe stays cheap.
+		break
+	}
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "FAILED: %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "OK")
+}
+
+// runDumbREPL starts the basic readline REPL over stdin/stdout. Used both for the non-TTY path and as
+// the fallback when the interactive TUI cannot initialize the terminal. modeCtl is shared with the
+// permission middleware so a runtime /mode switch takes effect on the next tool call.
+func runDumbREPL(ctx context.Context, buildAgent func(middlewares.AskResolver) core.Agent, prof config.Profile, modeCtl *middlewares.ModeController) {
+	ap := newReplApprover(os.Stdin, os.Stdout)
+	ag := buildAgent(ap.approve)
+	runREPL(ctx, ag, prof, modeCtl)
 }
 
 // recentSessionID returns the id of the most recently updated session in the store (List is sorted

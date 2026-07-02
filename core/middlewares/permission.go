@@ -173,7 +173,15 @@ func (p *PermissionMiddleware) check(toolName string, input json.RawMessage) (De
 			}
 			subs := splitBashCommand(cmd)
 			if len(subs) > 0 {
-				return p.aggregate(toolName, subs), nil
+				dec := p.aggregate(toolName, subs)
+				// Command substitution ($(...) / backticks) and process substitution hide arbitrary
+				// commands the splitter cannot see. Never silently auto-allow these: downgrade a
+				// would-be Allow to Ask so the user gets a chance to inspect the real command.
+				// Deny/Ask are already at least as strict, so they pass through unchanged.
+				if dec.Effect == EffectAllow && hasCommandSubstitution(cmd) {
+					return Decision{Effect: EffectAsk, Reason: "command substitution ($()/backticks) cannot be statically inspected: " + cmd}, nil
+				}
+				return dec, nil
 			}
 		}
 	}
@@ -348,22 +356,29 @@ func extractFilePath(input json.RawMessage) string {
 
 // splitBashCommand splits compound shell commands into subcommands.
 //
-// Splits by shell control operators: &&  ||  |  ;  and newlines.
+// Splits by shell control operators: &&  ||  |  ;  &  and newlines.
 //
 // This is a best-effort heuristic (does not invoke a real shell parser):
-//   - Covers common compound forms (&& / || / | / ;);
+//   - Covers common compound forms (&& / || / | / ; / & background);
+//   - Preserves the redirect forms &> and >& (they are not command separators);
 //   - Does not recognize operators inside quotes, command substitution $(...) / backticks,
-//     subshells (...), heredocs, eval, etc., so deny rules are ineffective against deliberate
-//     evasion (e.g., `$(rm -rf /)`).
-//   - Strong isolation (OS-level hard boundaries) should rely on builtins.Sandbox;
-//     permission rules are only a best-effort auxiliary filter.
+//     subshells (...), heredocs, eval, etc. Command substitution is handled separately in check()
+//     by refusing to auto-allow (see hasCommandSubstitution); strong isolation still requires
+//     builtins.Sandbox — permission rules are only a best-effort auxiliary filter.
 //
 // Biased toward over-splitting (extra checks are harmless).
 func splitBashCommand(cmd string) []string {
 	s := cmd
-	// Normalize multi-character operators to a single placeholder
+	// Normalize multi-character operators to a single placeholder first.
 	s = strings.ReplaceAll(s, "&&", "\x00")
 	s = strings.ReplaceAll(s, "||", "\x00")
+	// Protect redirect operators before splitting the single '&' (background/`a & b`),
+	// so `cmd &> file` / `cmd >& file` are not shattered into bogus subcommands.
+	s = strings.ReplaceAll(s, "&>", "\x01")
+	s = strings.ReplaceAll(s, ">&", "\x02")
+	s = strings.ReplaceAll(s, "&", "\x00")
+	s = strings.ReplaceAll(s, "\x01", "&>")
+	s = strings.ReplaceAll(s, "\x02", ">&")
 	s = strings.ReplaceAll(s, "|", "\x00")
 	s = strings.ReplaceAll(s, ";", "\x00")
 	s = strings.ReplaceAll(s, "\n", "\x00")
@@ -376,6 +391,17 @@ func splitBashCommand(cmd string) []string {
 		}
 	}
 	return out
+}
+
+// hasCommandSubstitution reports whether cmd contains a command/process substitution construct that
+// the static splitter cannot see into: $(...), backticks, or <(...)/>(...). Conservative by design
+// (a match inside single quotes is inert but still flagged) — over-asking is safe, under-asking is not.
+func hasCommandSubstitution(cmd string) bool {
+	if strings.Contains(cmd, "$(") || strings.ContainsRune(cmd, '`') {
+		return true
+	}
+	// Process substitution <( ... ) / >( ... )
+	return strings.Contains(cmd, "<(") || strings.Contains(cmd, ">(")
 }
 
 // ApproveKey generates a session-level authorization ("a") key, refining the allowSet granularity from pure tool name to tool+input:

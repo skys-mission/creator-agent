@@ -36,6 +36,7 @@ var enDict = map[string]string{
 	"home.tip_label": "● Tip  ",
 	"home.recent":    "Recent  (1-9 to resume)",
 	"home.variant":   " · variant:",
+	"home.mode":      " · mode:",
 	"home.untitled":  "(untitled session)",
 
 	"home.tip.agents":    "Type /agents to switch between build (full tools) and plan (read-only) personas.",
@@ -47,6 +48,7 @@ var enDict = map[string]string{
 	"home.tip.keys":      "Press Ctrl+Alt+K to see all keybindings grouped in a panel.",
 	"home.tip.sessions":  "Use /sessions to list and switch conversations; /new starts a fresh one.",
 	"home.tip.mcps":      "Use /mcps to enable or disable individual MCP servers at runtime.",
+	"home.tip.mode":      "Use /mode to change the permission mode (default/trust/auto/readonly); Shift+Tab cycles it.",
 	"home.tip.themes":    "Use /themes to switch between dark and light palettes.",
 	"home.tip.digits":    "Press 1-9 on this screen to quickly resume a recent session.",
 	"home.tip.alt_enter": "Press Alt+Enter to insert a newline in multi-line input.",
@@ -151,6 +153,7 @@ var enDict = map[string]string{
 	"msg.execution_in_progress": "Execution in progress, please wait (or Ctrl+C to interrupt before sending)",
 	"msg.switch_failed":         "Switch failed: %v",
 	"msg.no_tools":              "No available tools",
+	"msg.unknown_command":       "Unknown command %q. Type /help to see available commands.",
 
 	"tools.header":     "Available tools (%d):\n",
 	"tools.read_write": "read-write",
@@ -348,6 +351,7 @@ var enDict = map[string]string{
 	"key.desc.help":                 "Show slash-command list",
 	"key.desc.switch_model":         "Switch model profile (picker)",
 	"key.desc.switch_mode":          "Switch permission mode (default/trust/auto/readonly)",
+	"key.desc.toggle_sandbox":       "Toggle bash OS sandbox (on/off/auto)",
 	"key.desc.toggle_mcp":           "Toggle MCP servers (picker)",
 	"key.desc.switch_theme":         "Switch color theme",
 	"key.desc.view_diff":            "View a file's last change",

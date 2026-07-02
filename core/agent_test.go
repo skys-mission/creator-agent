@@ -219,21 +219,24 @@ type panicBeforeAgentMW struct{ BaseMiddleware }
 
 func (panicBeforeAgentMW) BeforeAgent(context.Context, *RunState) error { panic("before-agent boom") }
 
-// TestStreamReleasesSessionLockOnSyncPanic verifies that a panic in the synchronous setup phase
-// does not leak the per-session lock (which would deadlock that session forever).
+// TestStreamReleasesSessionLockOnSyncPanic verifies that a panic in the synchronous setup phase is
+// recovered into an error (never crashes the process) and does not leak the per-session lock (which
+// would deadlock that session forever).
 func TestStreamReleasesSessionLockOnSyncPanic(t *testing.T) {
 	mock := &mockProvider{turns: [][]ModelEvent{{MTextDelta{Delta: "ok"}}}}
 	ag := NewAgent(mock, WithMiddlewares(panicBeforeAgentMW{}))
 
-	// First call: BeforeAgent panics synchronously while holding the session lock. Recover it.
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = ag.Stream(context.Background(), PromptInput("sess1", "x"))
-		t.Fatal("expected BeforeAgent panic to propagate from Stream")
-	}()
+	// First call: BeforeAgent panics synchronously; it must be recovered into an error, not propagated.
+	_, err := ag.Stream(context.Background(), PromptInput("sess1", "x"))
+	if err == nil {
+		t.Fatal("expected BeforeAgent panic to be recovered into an error from Stream")
+	}
+	if !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("error should mention the recovered panic, got %v", err)
+	}
 
 	// Second call on the same session: it must be able to acquire the session lock. If the lock
-	// leaked, sessionLock.Lock() blocks forever and BeforeAgent is never reached.
+	// leaked, acquisition blocks forever and BeforeAgent is never reached.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

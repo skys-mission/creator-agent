@@ -39,6 +39,32 @@ func TestMemoryStoreBasic(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreLoadNoAlias is an A1 regression: Load must return a copy of the stored slice, so a
+// caller mutating the returned slice (as compaction middleware rewrites history in place) cannot
+// corrupt the store's copy. Likewise Save must snapshot its input so a later caller mutation does
+// not leak into the store.
+func TestMemoryStoreLoadNoAlias(t *testing.T) {
+	s := NewMemoryStore()
+	orig := []Message{UserMessage("a"), AssistantMessage("b")}
+	if err := s.Save("x", orig); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutating the slice passed to Save must not affect what the store holds.
+	orig[0] = UserMessage("MUTATED")
+	got, _ := s.Load("x")
+	if len(got) == 0 || got[0].Content != "a" {
+		t.Errorf("Save aliased caller slice: got[0]=%q, want %q", got[0].Content, "a")
+	}
+
+	// Mutating the slice returned by Load must not affect the store either.
+	got[0] = UserMessage("MUTATED2")
+	again, _ := s.Load("x")
+	if again[0].Content != "a" {
+		t.Errorf("Load returned an aliased slice: got[0]=%q, want %q", again[0].Content, "a")
+	}
+}
+
 // JSONFileStore: write -> read -> clear (persisted + survives restart).
 func TestJSONFileStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()

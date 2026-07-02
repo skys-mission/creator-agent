@@ -202,6 +202,7 @@ var homeTipKeys = []string{
 	"home.tip.keys",
 	"home.tip.sessions",
 	"home.tip.mcps",
+	"home.tip.mode",
 	"home.tip.themes",
 	"home.tip.digits",
 	"home.tip.alt_enter",

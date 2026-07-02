@@ -3,7 +3,6 @@ package middlewares
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/skys-mission/creator-agent/core"
 )
@@ -32,6 +31,11 @@ func NewSummarization(model core.ModelProvider) *Summarization {
 }
 
 // BeforeModel checks the token count before each model call and compresses history if it exceeds the threshold.
+//
+// Failure policy: predictive summarization is best-effort. If the summary model call fails (transient
+// outage, rate limit), this degrades to a no-op and lets the turn proceed on the uncompressed history
+// rather than aborting the whole agent run. The reactive OnError path (Reactive middleware) remains the
+// hard backstop that must compress when the provider actually rejects an over-long context.
 func (s *Summarization) BeforeModel(ctx context.Context, st *core.RunState) error {
 	if s.Model == nil {
 		return nil
@@ -39,9 +43,14 @@ func (s *Summarization) BeforeModel(ctx context.Context, st *core.RunState) erro
 	if core.EstimateTokens(st.Messages) < s.Threshold {
 		return nil
 	}
-	out, compressed, err := compressHistory(ctx, s.Model, st.Messages, s.KeepRecent, summarizePrompt)
+	// Respect interruption: if the user canceled, surface it so the loop finishes cleanly.
+	if ctx.Err() != nil {
+		return nil
+	}
+	out, compressed, err := compressHistory(ctx, s.Model, st.Messages, s.KeepRecent, core.DefaultSummarizePrompt)
 	if err != nil {
-		return fmt.Errorf("summarize history: %w", err)
+		core.Warnf("predictive summarization failed, proceeding without compaction (reactive path will retry if the provider rejects the context): %v", err)
+		return nil
 	}
 	if !compressed {
 		return nil // nothing compressible after pair expansion
@@ -49,11 +58,3 @@ func (s *Summarization) BeforeModel(ctx context.Context, st *core.RunState) erro
 	st.Messages = out
 	return nil
 }
-
-const summarizePrompt = `Concisely summarize the conversation above. Preserve:
-- The user's goal(s) and any constraints
-- Key decisions and their reasons
-- File names/paths that were read or modified
-- Errors encountered and how they were resolved
-- Current task state and any pending next step
-Be brief (a few short bullets). Do not include full file contents.`

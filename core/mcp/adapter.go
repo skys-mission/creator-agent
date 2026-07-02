@@ -32,6 +32,66 @@ func (c *Client) AdaptTools(tools []*mcp.Tool) []core.Tool {
 	return out
 }
 
+// renamedTool overrides the display name of a wrapped tool while delegating execution unchanged.
+// Used to namespace colliding tool names (server__tool) across MCP servers: the model sees the
+// namespaced name, but Exec still targets the original server-side tool name.
+type renamedTool struct {
+	core.Tool
+	name string
+}
+
+func (r renamedTool) Info() core.ToolInfo {
+	info := r.Tool.Info()
+	info.Name = r.name
+	return info
+}
+
+// namespacedName builds a collision-free tool name by prefixing the server name, sanitized to the
+// characters providers accept in function names ([A-Za-z0-9_-]); other runes become underscores.
+func namespacedName(server, tool string) string {
+	return sanitizeToolNamePart(server) + "__" + tool
+}
+
+func sanitizeToolNamePart(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+// serverTool pairs a tool with the server it came from, so the flattening step can namespace
+// colliding names deterministically.
+type serverTool struct {
+	server string
+	tool   core.Tool
+}
+
+// namespaceCollisions returns the flattened tools with any name that appears on more than one server
+// rewritten to server__tool. Names unique across the whole set are left untouched, so the common
+// (non-colliding) case keeps short, stable names and does not disturb the prompt-prefix cache.
+func namespaceCollisions(items []serverTool) []core.Tool {
+	counts := make(map[string]int, len(items))
+	for _, it := range items {
+		counts[it.tool.Info().Name]++
+	}
+	out := make([]core.Tool, 0, len(items))
+	for _, it := range items {
+		name := it.tool.Info().Name
+		if counts[name] > 1 {
+			out = append(out, renamedTool{Tool: it.tool, name: namespacedName(it.server, name)})
+		} else {
+			out = append(out, it.tool)
+		}
+	}
+	return out
+}
+
 // resolveInputSchema converts a tool's input schema to JSON once, at adaptation time. The SDK exposes
 // InputSchema as any (the default JSON marshaling of the server's schema, typically map[string]any);
 // we marshal it back to JSON Schema bytes. A server that returns no usable schema falls back to a
@@ -144,6 +204,7 @@ func LoadAll(ctx context.Context, configs []ServerConfig) (tools []core.Tool, cl
 		}
 	}
 	var firstErr error
+	var collected []serverTool
 	for _, cfg := range configs {
 		c, e := NewClient(ctx, cfg)
 		if e != nil {
@@ -160,7 +221,11 @@ func LoadAll(ctx context.Context, configs []ServerConfig) (tools []core.Tool, cl
 			}
 			continue
 		}
-		tools = append(tools, c.AdaptTools(mcpTools)...)
+		for _, t := range c.AdaptTools(mcpTools) {
+			collected = append(collected, serverTool{server: cfg.Name, tool: t})
+		}
 	}
+	// Namespace names that collide across servers (server__tool); unique names are left untouched.
+	tools = namespaceCollisions(collected)
 	return tools, closeFn, firstErr
 }

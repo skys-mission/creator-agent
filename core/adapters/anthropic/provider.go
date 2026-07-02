@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"sort"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -262,7 +261,50 @@ func toAnthropicMessages(msgs []core.Message) (system []anthropic.TextBlockParam
 			conv = append(conv, anthropic.NewUserMessage(toolBlocks...))
 		}
 	}
+	applyCacheBreakpoints(system, conv)
 	return system, conv
+}
+
+// applyCacheBreakpoints inserts Anthropic prompt-cache (ephemeral) breakpoints to maximize KV-cache
+// reuse across turns. Anthropic caches the request prefix up to and including each marked block, in
+// the fixed order tools -> system -> messages, and allows up to 4 breakpoints. We place:
+//  1. one on the last system block — caches the stable tools + system-prompt prefix, which is
+//     identical every turn (the biggest, most reused chunk); and
+//  2. one on the last block of the final message — a moving breakpoint that lets each turn extend the
+//     cached conversation prefix incrementally, so the next turn reuses the whole history up to here.
+//
+// Adding a breakpoint is free when unsupported (the field marshals to cache_control, which non-caching
+// endpoints ignore). Thinking blocks are skipped (cache_control is not valid on them).
+func applyCacheBreakpoints(system []anthropic.TextBlockParam, conv []anthropic.MessageParam) {
+	if n := len(system); n > 0 {
+		system[n-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
+	if n := len(conv); n > 0 {
+		blocks := conv[n-1].Content
+		for i := len(blocks) - 1; i >= 0; i-- {
+			if markCacheable(&blocks[i]) {
+				break
+			}
+		}
+	}
+}
+
+// markCacheable sets an ephemeral cache breakpoint on a content block if it is a cacheable kind
+// (text / tool_use / tool_result). Returns true when a breakpoint was applied. Thinking and other
+// block kinds are not cacheable and return false so the caller can try an earlier block.
+func markCacheable(b *anthropic.ContentBlockParamUnion) bool {
+	cc := anthropic.NewCacheControlEphemeralParam()
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = cc
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = cc
+	case b.OfToolUse != nil:
+		b.OfToolUse.CacheControl = cc
+	default:
+		return false
+	}
+	return true
 }
 
 // toAnthropicTools maps core.ToolInfo to Anthropic tool declarations.
@@ -345,20 +387,10 @@ func variantRequestOptions(headers map[string]string, body map[string]any) []opt
 		return nil
 	}
 	opts := make([]option.RequestOption, 0, len(headers)+len(body))
-	hk := make([]string, 0, len(headers))
-	for k := range headers {
-		hk = append(hk, k)
-	}
-	sort.Strings(hk)
-	for _, k := range hk {
+	for _, k := range shared.SortedStringKeys(headers) {
 		opts = append(opts, option.WithHeader(k, headers[k]))
 	}
-	bk := make([]string, 0, len(body))
-	for k := range body {
-		bk = append(bk, k)
-	}
-	sort.Strings(bk)
-	for _, k := range bk {
+	for _, k := range shared.SortedAnyKeys(body) {
 		opts = append(opts, option.WithJSONSet(k, body[k]))
 	}
 	return opts
@@ -372,14 +404,7 @@ func convertErr(err error) error {
 	}
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.StatusCode == 429:
-			return &core.RateLimitedError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 500:
-			return &core.ServerError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 400:
-			return &core.ClientError{Err: err, StatusCode: apiErr.StatusCode}
-		}
+		return shared.ClassifyStatus(err, apiErr.StatusCode)
 	}
 	return err
 }

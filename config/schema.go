@@ -49,6 +49,7 @@ type Config struct {
 	Memory      MemoryConfig     `toml:"memory"`
 	Skills      SkillsConfig     `toml:"skills"`
 	Sandbox     SandboxConfig    `toml:"sandbox"`
+	Compaction  CompactionConfig `toml:"compaction"`
 	Appearance  AppearanceConfig `toml:"appearance"`
 
 	// ToolsDefaults is the universal layer applied to all tools (lowest override priority
@@ -165,11 +166,69 @@ type SkillsConfig struct {
 	Budget  int      `toml:"budget"` // summary injection byte budget (default 25000)
 }
 
-// SandboxConfig controls OS-level sandboxing for the bash tool (opt-in, default off).
+// SandboxConfig controls OS-level sandboxing for the bash tool.
+//
+// Enabled is tri-state (pointer): unset lets the permission mode decide (isolation ON in "auto"
+// mode, OFF otherwise — unattended execution needs a hard boundary); an explicit true/false always
+// wins in every mode, giving the user a full escape hatch either way. Escape valves when isolated:
+// AllowDirs opens extra writable directories and AllowNetwork lifts the default network block.
 type SandboxConfig struct {
-	Enabled   bool     `toml:"enabled"`
-	Mode      string   `toml:"mode"`       // "filesystem" (default) / "strict"; reserved, validated but not yet wired
-	AllowDirs []string `toml:"allow_dirs"` // extra writable directories outside cwd
+	Enabled      *bool    `toml:"enabled"`       // nil = decide by mode; true/false = force
+	Mode         string   `toml:"mode"`          // "filesystem" (default) / "strict"; reserved, validated but not yet wired
+	AllowDirs    []string `toml:"allow_dirs"`    // extra writable directories outside cwd
+	AllowNetwork bool     `toml:"allow_network"` // when isolated, allow network access (default: blocked)
+}
+
+// ResolveEnabled decides whether OS sandbox isolation applies for the given permission mode.
+// Explicit config wins in any mode; when unset, isolation is on only in "auto" mode.
+func (s SandboxConfig) ResolveEnabled(mode string) bool {
+	if s.Enabled != nil {
+		return *s.Enabled
+	}
+	return middlewares.NormalizeMode(middlewares.Mode(mode)) == middlewares.ModeAuto
+}
+
+// CompactionConfig tunes the two conversation-compaction layers that keep the running history
+// inside the model's context window:
+//
+//   - Predictive summarization (Summarization middleware): a model call that rewrites the older
+//     part of the history once the estimated token count crosses Threshold.
+//   - Structural micro-compaction (MicroCompact middleware): a zero-cost rewrite that stubs out
+//     old oversized tool results once the character count crosses MicroThreshold.
+//
+// All fields are optional (zero = built-in default). ContextWindow, when set, derives Threshold
+// as a fraction of the window so the trigger scales with the model instead of a hardcoded constant.
+type CompactionConfig struct {
+	// ContextWindow is the model's total context length in tokens. When set and Threshold is unset,
+	// the predictive trigger becomes ContextWindow * 3/4 so compaction fires with headroom to spare.
+	ContextWindow int `toml:"context_window"`
+	// Threshold is the estimated-token count that triggers predictive summarization. 0 = derive from
+	// ContextWindow when set, else the built-in default (24000).
+	Threshold int `toml:"threshold"`
+	// KeepRecent is how many trailing messages predictive summarization preserves verbatim. 0 = default (6).
+	KeepRecent int `toml:"keep_recent"`
+	// Profile names an alternate model profile used for compaction summaries (e.g. a cheaper/faster
+	// model). Empty = reuse the agent's current provider.
+	Profile string `toml:"profile"`
+
+	// MicroThreshold is the total character count that triggers structural micro-compaction. 0 = default (8000).
+	MicroThreshold int `toml:"micro_threshold"`
+	// MicroKeepRecent is how many trailing messages micro-compaction leaves untouched. 0 = default (8).
+	MicroKeepRecent int `toml:"micro_keep_recent"`
+	// MicroMaxToolResultChars is the per-tool-result length above which an old result is stubbed. 0 = default (500).
+	MicroMaxToolResultChars int `toml:"micro_max_tool_result_chars"`
+}
+
+// ResolveThreshold returns the effective predictive-summarization token threshold: an explicit
+// Threshold wins; otherwise 3/4 of ContextWindow when that is set; otherwise 0 (caller keeps its default).
+func (c CompactionConfig) ResolveThreshold() int {
+	if c.Threshold > 0 {
+		return c.Threshold
+	}
+	if c.ContextWindow > 0 {
+		return c.ContextWindow * 3 / 4
+	}
+	return 0
 }
 
 // AppearanceConfig controls the TUI look (theme + language).

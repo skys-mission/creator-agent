@@ -153,9 +153,14 @@ max_tokens = 8192
 ```bash
 ./creator-agent "你的 prompt"
 ./creator-agent -profile openai "用这个 profile 跑"
+./creator-agent -json "你的 prompt"          # 输出单个 JSON 结果对象（脚本友好）
 ```
 
 执行一次、打印结果后退出，无多轮记忆（每次独立）。
+
+**退出码（可脚本化）**：按结束原因映射——`0` 正常结束（stop）；`1` 出现系统错误；`2` 触达步数上限（step_limit）；`130` 被中断（Ctrl+C，遵循 128+SIGINT 约定）。
+
+**`-json` 输出**：打印一个自包含的 JSON 对象，字段为 `text`（拼接后的回复文本）、`finish_reason`、`error`（有则）、`tools`（工具名 + 各自 error）、`usage`（token 统计）。适合在 CI / 脚本里解析结果。
 
 > **写操作审批**：headless 默认用 `default` 权限模式——`write`/`edit`/`bash` 因无法交互审批而被拒绝（模型转用只读工具回答，或给出可手动执行的命令）。需要让 headless 自动执行写操作，可在 config 设 `permissions.mode: auto`（灾难性操作仍被拦）。详见 [权限模式](config.md#权限模式permission-modes)。
 

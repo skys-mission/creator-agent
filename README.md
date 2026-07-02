@@ -17,7 +17,7 @@
 - 🌐 **多模型中立**：OpenAI / DeepSeek / 通义 / 智谱 / Kimi / ollama……任何 OpenAI 兼容端点，不绑厂商
 - 💬 **交互式 REPL/TUI**：多轮对话、记住上下文、流式输出、`Ctrl+C` 中断
 - 🔧 **完整工具集**：`read` / `write` / `edit` / `bash` / `grep` / `glob` + `task`（subagent）+ `skill`（Skills 系统）+ `todo_write`（任务进度跟踪）
-- 🛡️ **安全可控**：4 种权限模式（`default` / `trust` / `auto` / `readonly`，运行时 `/mode` 切换）+ allow/deny 规则（bash 复合命令拆分）+ opt-in OS 沙箱（macOS sandbox-exec / Linux bwrap）
+- 🛡️ **安全可控**：4 种权限模式（`default` / `trust` / `auto` / `readonly`，运行时 `/mode` 切换）+ allow/deny 规则（bash 复合命令拆分）+ OS 沙箱（macOS sandbox-exec / Linux bwrap；三态 `enabled`，`auto` 模式默认开、运行时 `/sandbox` 覆盖）
 - 🧠 **长对话压缩**：三层 compact（micro / auto / reactive），上下文不会爆
 - ♻️ **错误自愈**：瞬时错误（429/5xx）自动指数退避重试 + 用户可读的错误分类
 - 🪝 **可扩展**：用户钩子（Pre/PostToolUse/Stop）+ MCP client + Skills 系统
@@ -97,14 +97,14 @@ model = "gpt-4o-mini"
 ```
 cmd/creator-agent/   # CLI 入口（main + repl + headless + setup + tui/ + agents/approve/compact/mcp/tools/title/cleanup/ui）
 core/                # 核心库：agent loop / 工具 / 中间件 / 防腐层
-  ├── adapters/openai/ # 底层适配（官方 openai-go）—— 防腐层边界
+  ├── adapters/      # 底层适配（防腐层边界）：openai-chat / openai-responses / anthropic + shared（公共层）
   ├── builtins/      # 内置工具（read/write/edit/bash/grep/glob + task + skill + todo + sandbox）
   ├── mcp/           # MCP client adapter（连外部 MCP server 取工具）
   └── middlewares/   # compaction / permission / hooks / agentsmd / skills / automemory
 config/              # 配置加载
 ```
 
-Core 通过**防腐层**（`adapters/openai`）隔离底层 SDK：对外只暴露自己的接口，换底层不动上层。多 provider 按 `adapters/<vendor>/` 分包，config `type` 字段切换。详见 [docs/architecture.md](docs/architecture.md)。
+Core 通过**防腐层**（`core/adapters/`）隔离底层 SDK：对外只暴露自己的接口，换底层不动上层。多 provider 按 `adapters/<vendor>/` 分包（`openai-chat` / `openai-responses` / `anthropic`，公共错误分类等在 `adapters/shared`），config `type` 字段切换。详见 [docs/architecture.md](docs/architecture.md)。
 
 ## 开发
 
@@ -112,6 +112,7 @@ Core 通过**防腐层**（`adapters/openai`）隔离底层 SDK：对外只暴�
 make build       # 编译二进制
 make run         # 编译并进入交互模式
 make dev-sandbox # 一键隔离 dev/测试沙箱（自动编译+一次性+用完即焚）
+make dev-blank   # 空配置隔离沙箱（测首次引导/setup wizard；不复制真实配置、不注入 key）
 make test        # 跑全部测试（含 race）
 make test-cover  # 测试 + 覆盖率（含 race）
 make bench       # 基准测试（纯函数热路径）

@@ -36,6 +36,7 @@ var zhDict = map[string]string{
 	"home.tip_label": "● 提示  ",
 	"home.recent":    "最近会话  (按 1-9 恢复)",
 	"home.variant":   " · 变体:",
+	"home.mode":      " · 模式:",
 	"home.untitled":  "(未命名会话)",
 
 	"home.tip.agents":    "输入 /agents 切换 build（全工具）和 plan（只读）人格。",
@@ -47,6 +48,7 @@ var zhDict = map[string]string{
 	"home.tip.keys":      "按 Ctrl+Alt+K 查看分组后的全部快捷键。",
 	"home.tip.sessions":  "使用 /sessions 列出并切换会话；/new 开始新会话。",
 	"home.tip.mcps":      "使用 /mcps 在运行时启用或禁用单个 MCP 服务器。",
+	"home.tip.mode":      "使用 /mode 切换权限模式（default/trust/auto/readonly）；Shift+Tab 可循环切换。",
 	"home.tip.themes":    "使用 /themes 在深色和浅色主题间切换。",
 	"home.tip.digits":    "在此界面按 1-9 快速恢复最近会话。",
 	"home.tip.alt_enter": "按 Alt+Enter 在多行输入中插入换行。",
@@ -151,6 +153,7 @@ var zhDict = map[string]string{
 	"msg.execution_in_progress": "执行中，请稍候（或先按 Ctrl+C 中断再发送）",
 	"msg.switch_failed":         "切换失败: %v",
 	"msg.no_tools":              "没有可用工具",
+	"msg.unknown_command":       "未知命令 %q。输入 /help 查看可用命令。",
 
 	"tools.header":     "可用工具 (%d):\n",
 	"tools.read_write": "读写",
@@ -348,6 +351,7 @@ var zhDict = map[string]string{
 	"key.desc.help":                 "显示斜杠命令列表",
 	"key.desc.switch_model":         "切换模型 profile（选择器）",
 	"key.desc.switch_mode":          "切换权限模式（default/trust/auto/readonly）",
+	"key.desc.toggle_sandbox":       "切换 bash 系统沙箱（on/off/auto）",
 	"key.desc.toggle_mcp":           "切换 MCP 服务器（选择器）",
 	"key.desc.switch_theme":         "切换配色主题",
 	"key.desc.view_diff":            "查看文件最近修改",

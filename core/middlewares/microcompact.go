@@ -47,8 +47,18 @@ func (m *MicroCompact) BeforeModel(_ context.Context, st *core.RunState) error {
 		return nil
 	}
 
-	// Only process messages before the KeepRecent window
-	cutoff := len(st.Messages) - m.KeepRecent
+	// Compute the "recent" window with the same pair-aware boundary that Summarization uses
+	// (core.PartitionForCompact), so both layers agree on what counts as recent and never stub a
+	// tool result whose sibling in the same tool-call batch stays intact. The leading system message
+	// is excluded from partitioning (it is never compacted) and its offset re-added afterward.
+	offset := 0
+	rest := st.Messages
+	if len(rest) > 0 && rest[0].Role == core.RoleSystem {
+		offset = 1
+		rest = rest[1:]
+	}
+	toCompact, _ := core.PartitionForCompact(rest, m.KeepRecent)
+	cutoff := offset + len(toCompact)
 	for i := 0; i < cutoff; i++ {
 		msg := st.Messages[i]
 		if msg.Role != core.RoleTool {

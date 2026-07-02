@@ -193,6 +193,29 @@ func maybeSpillResult(info ToolInfo, r ToolResult) ToolResult {
 	}
 }
 
+// SpillLargeOutput spills content to a temp file when it exceeds threshold bytes, returning a
+// bounded preview plus a pointer to the on-disk file (and true). Otherwise it returns content
+// unchanged (and false).
+//
+// Unlike the loop-layer spill (maybeSpillResult), this is meant to be called directly by a tool so
+// it can bound very large output even on error results — which the loop layer deliberately skips.
+// The canonical case is a failing shell command that printed megabytes to stderr: without this the
+// whole blob would land in the model context. Spilled files are tracked and removed by CleanupSpills.
+func SpillLargeOutput(toolName, content string, threshold int) (string, bool) {
+	if threshold <= 0 || len(content) <= threshold {
+		return content, false
+	}
+	path, err := spillToDisk(toolName, content)
+	if err != nil {
+		return TruncateBytesMaxSafe(content, threshold) + "\n... (output truncated; spill to disk failed: " + err.Error() + ")", true
+	}
+	spillTracker.mu.Lock()
+	spillTracker.paths = append(spillTracker.paths, path)
+	spillTracker.mu.Unlock()
+	preview := TruncateBytesMaxSafe(content, spillPreview)
+	return preview + fmt.Sprintf("\n... (output too large: showing first %d of %d bytes; full output saved to %s — inspect it with grep/head/tail or re-run the command narrowed)", len(preview), len(content), path), true
+}
+
 // TruncateBytesMaxSafe returns s truncated to at most max bytes on a UTF-8 rune boundary, without
 // appending any ellipsis. It backs off past any continuation byte so the result is always valid
 // UTF-8 even when max lands inside a multi-byte rune. Use this for byte-budgeted previews where a

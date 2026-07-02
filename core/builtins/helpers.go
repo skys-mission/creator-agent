@@ -182,7 +182,7 @@ func (w *limitedWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.truncated {
-		return fmt.Sprintf("%s\n... (output truncated at %d bytes)", w.buf.String(), w.max)
+		return fmt.Sprintf("%s\n... (output exceeded the %d-byte capture buffer and was cut here; narrow the command or redirect its output to a file and read that)", w.buf.String(), w.max)
 	}
 	return w.buf.String()
 }

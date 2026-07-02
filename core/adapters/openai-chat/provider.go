@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"time"
 
@@ -228,22 +227,11 @@ func variantRequestOptions(p *Provider) []option.RequestOption {
 		return nil
 	}
 	opts := make([]option.RequestOption, 0, len(p.extraHeaders)+len(p.extraBody))
-	// Headers: deterministic order for stable request shape (and stable logs/debug).
-	hk := make([]string, 0, len(p.extraHeaders))
-	for k := range p.extraHeaders {
-		hk = append(hk, k)
-	}
-	sort.Strings(hk)
-	for _, k := range hk {
+	// Deterministic order for stable request shape (and stable logs/debug).
+	for _, k := range shared.SortedStringKeys(p.extraHeaders) {
 		opts = append(opts, option.WithHeader(k, p.extraHeaders[k]))
 	}
-	// Body keys: order follows Go's map iteration; values are opaque to us (the endpoint decides).
-	bk := make([]string, 0, len(p.extraBody))
-	for k := range p.extraBody {
-		bk = append(bk, k)
-	}
-	sort.Strings(bk)
-	for _, k := range bk {
+	for _, k := range shared.SortedAnyKeys(p.extraBody) {
 		opts = append(opts, option.WithJSONSet(k, p.extraBody[k]))
 	}
 	return opts
@@ -257,14 +245,7 @@ func convertErr(err error) error {
 	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.StatusCode == 429:
-			return &core.RateLimitedError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 500:
-			return &core.ServerError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 400:
-			return &core.ClientError{Err: err, StatusCode: apiErr.StatusCode}
-		}
+		return shared.ClassifyStatus(err, apiErr.StatusCode)
 	}
 	return err
 }
@@ -300,6 +281,11 @@ func toOpenAIMessages(msgs []core.Message) []openai.ChatCompletionMessageParamUn
 }
 
 // toAssistantMessage builds an assistant message (may include tool_calls for multi-turn history backfill).
+//
+// Reasoning replay: m.Reasoning (e.g. DeepSeek reasoning_content) is deliberately NOT sent back. The
+// DeepSeek reasoner API rejects reasoning_content in request messages (HTTP 400), and the Chat
+// Completions schema has no field to carry it across turns. Reasoning is streamed live to the user;
+// cross-turn chain-of-thought is a Responses-API feature (see openai-responses' encrypted_content).
 func toAssistantMessage(m core.Message) openai.ChatCompletionMessageParamUnion {
 	if len(m.ToolCalls) == 0 {
 		return openai.AssistantMessage(m.Content)
@@ -363,6 +349,9 @@ func convertChunk(chunk openai.ChatCompletionChunk, indexToID map[int64]string) 
 		events = append(events, core.MUsage{Usage: core.Usage{
 			InputTokens:  int(chunk.Usage.PromptTokens),
 			OutputTokens: int(chunk.Usage.CompletionTokens),
+			// Prompt-cache hits (parity with Anthropic CacheRead): supported by OpenAI and several
+			// compatible endpoints (e.g. DeepSeek) via prompt_tokens_details.cached_tokens.
+			CacheRead: int(chunk.Usage.PromptTokensDetails.CachedTokens),
 		}})
 	}
 

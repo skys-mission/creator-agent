@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,7 +14,15 @@ import (
 	"github.com/skys-mission/creator-agent/paths"
 )
 
+// SessionSchemaVersion is the on-disk session file schema version this binary writes and understands.
+// A file may omit it (legacy: 0, treated as current) or carry a higher value written by a newer
+// binary; the latter triggers a non-fatal warning and reserves a migration hook point. Bump this
+// whenever the persisted shape changes in a way that needs migration.
+const SessionSchemaVersion = 1
+
 type sessionFile struct {
+	// Version is the schema version of this file (0 = legacy/unspecified, treated as current).
+	Version   int       `json:"version,omitempty"`
 	Title     string    `json:"title"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Pinned    bool      `json:"pinned,omitempty"`
@@ -75,6 +85,9 @@ func parseSessionData(data []byte) ([]Message, error) {
 	var sf sessionFile
 	if err := json.Unmarshal(data, &sf); err != nil {
 		return nil, err
+	}
+	if sf.Version > SessionSchemaVersion {
+		Warnf("session file schema version %d is newer than this binary supports (%d); loading best-effort, some fields may be ignored — consider upgrading creator-agent", sf.Version, SessionSchemaVersion)
 	}
 	return sf.Messages, nil
 }
@@ -163,7 +176,7 @@ func (s *JSONFileStore) SaveWithMeta(id, title string, msgs []Message) error {
 	if metaErr != nil {
 		pinned = false
 	}
-	sf := sessionFile{Title: t, UpdatedAt: now, Pinned: pinned, Messages: msgs}
+	sf := sessionFile{Version: SessionSchemaVersion, Title: t, UpdatedAt: now, Pinned: pinned, Messages: msgs}
 	data, err := json.Marshal(sf)
 	if err != nil {
 		return fmt.Errorf("encode session %q: %w", id, err)
@@ -202,6 +215,15 @@ func (s *JSONFileStore) Clear(id string) error {
 	if err != nil {
 		return err
 	}
+	// Acquire the cross-process lock so a concurrent Save (another process) cannot race the removal.
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir session dir: %w", err)
+	}
+	unlock, lerr := flockFile(filepath.Join(s.Dir, ".lock"))
+	if lerr != nil {
+		return fmt.Errorf("acquire session lock: %w", lerr)
+	}
+	defer unlock()
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("clear session %q: %w", id, err)
 	}
@@ -255,6 +277,7 @@ func (s *JSONFileStore) rewriteMeta(id string, mutate func(*sessionFile)) error 
 		}
 	}
 	mutate(&sf)
+	sf.Version = SessionSchemaVersion // upgrade the file to the current schema on any meta rewrite
 	out, merr := json.Marshal(sf)
 	if merr != nil {
 		return fmt.Errorf("encode session %q: %w", id, merr)
@@ -321,6 +344,15 @@ func (s *JSONFileStore) safePath(id string) (string, error) {
 	safe := SanitizeFilename(id)
 	if safe == "" {
 		return "", fmt.Errorf("invalid session id %q", id)
+	}
+	// Collision guard: sanitization is lossy, so distinct ids can map to the same filename
+	// (e.g. "foo/bar" and "foo-bar" both -> "foo-bar"). When sanitization altered the id, append a
+	// short deterministic hash of the original id to keep filenames unique. Ids that need no
+	// sanitization (generated ses_* ids and the fixed "repl" id) are left untouched, so their
+	// filenames — and List()'s id round-trip — are unaffected.
+	if safe != id {
+		sum := sha256.Sum256([]byte(id))
+		safe = safe + "-" + hex.EncodeToString(sum[:4])
 	}
 	return filepath.Join(s.Dir, safe+".json"), nil
 }

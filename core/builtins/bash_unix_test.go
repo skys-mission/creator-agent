@@ -8,7 +8,32 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/skys-mission/creator-agent/core"
 )
+
+// TestBashSpillsLargeOutput verifies bash spills output over the threshold to a temp file and returns
+// a bounded preview + pointer instead of the whole blob.
+func TestBashSpillsLargeOutput(t *testing.T) {
+	t.Cleanup(func() { _ = core.CleanupSpills() })
+	b := NewBashTool()
+	// Emit well over bashResultThreshold bytes.
+	out, err := b.Exec(context.Background(), rawJSON(t, map[string]string{
+		"command": "for i in $(seq 1 5000); do echo 0123456789; done",
+	}))
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error result: %q", out.Content)
+	}
+	if len(out.Content) > bashResultThreshold {
+		t.Errorf("result not bounded: %d bytes", len(out.Content))
+	}
+	if !strings.Contains(out.Content, "saved to") {
+		t.Errorf("expected spill pointer in output, got %q", out.Content)
+	}
+}
 
 // --- Bash timeout should kill the entire process group (including background children), leaving no orphans. ---
 

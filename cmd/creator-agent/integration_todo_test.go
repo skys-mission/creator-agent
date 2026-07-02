@@ -41,7 +41,7 @@ Using todo_write: For multi-step tasks (3+ steps), FIRST call todo_write with th
 	}
 	t.Logf("tools called=%d, text=%q", r.toolCalls(), r.text)
 	// Verify the model actually called todo_write (store non-empty + each item content non-empty)
-	items := todoStore.Get("repl")
+	items := todoStore.Get("test-todo")
 	if len(items) == 0 {
 		t.Error("model should have called todo_write to create the list; store is empty")
 	} else {

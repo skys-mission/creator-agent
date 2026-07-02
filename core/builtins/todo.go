@@ -97,11 +97,19 @@ func NewTodoTool(store *TodoStore) *TodoTool {
 	return &TodoTool{store: store}
 }
 
-// todoSessionKey extracts sessionID from ctx (falls back to default "repl").
-// core.ctx currently does not carry sessionID (StreamInput.SessionID is consumed at the agent layer, not in ctx),
-// so the first version uses a fixed "repl" (consistent with TUI). Child session (task) isolation is handled
-// by excluding todo_write from the child toolset.
+// todoDefaultSession is the fallback bucket used when ctx carries no session ID (e.g. stateless
+// headless runs). Normal REPL/TUI turns carry a real session ID injected by the agent layer
+// (core.WithSessionID), so distinct sessions keep independent todo lists.
 const todoDefaultSession = "repl"
+
+// todoSession returns the session ID scoping this todo list: the ctx-carried ID when present,
+// otherwise the default bucket.
+func todoSession(ctx context.Context) string {
+	if id := core.SessionIDFromContext(ctx); id != "" {
+		return id
+	}
+	return todoDefaultSession
+}
 
 func (t *TodoTool) Info() core.ToolInfo {
 	return core.ToolInfo{
@@ -176,7 +184,7 @@ func (t *TodoTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 		}
 	}
 
-	t.store.Set(todoDefaultSession, items)
+	t.store.Set(todoSession(ctx), items)
 
 	// Return a summary to help the model confirm the write succeeded and see the list state.
 	// planned is counted separately to remind the model "some items are still just plans", prompting it to decide whether to proceed.

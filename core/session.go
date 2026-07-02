@@ -43,7 +43,9 @@ func (m *MemoryStore) Load(id string) ([]Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e, ok := m.mem[id]; ok {
-		return e.msgs, nil
+		// Return a copy so callers (and middlewares that rewrite RunState.Messages in place,
+		// e.g. MicroCompact) cannot mutate the stored history before it is saved.
+		return append([]Message(nil), e.msgs...), nil
 	}
 	return nil, nil
 }
@@ -69,7 +71,8 @@ func (m *MemoryStore) SaveWithMeta(id, title string, msgs []Message) error {
 	if hadPrev {
 		pinned = prev.pinned
 	}
-	m.mem[id] = memEntry{title: t, updatedAt: now, msgs: msgs, pinned: pinned}
+	// Store a copy so later in-place mutation of the caller's slice cannot corrupt persisted history.
+	m.mem[id] = memEntry{title: t, updatedAt: now, msgs: append([]Message(nil), msgs...), pinned: pinned}
 	return nil
 }
 

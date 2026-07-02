@@ -14,10 +14,7 @@ func TestApproverYesOnce(t *testing.T) {
 		t.Error("y should allow")
 	}
 	// y is not remembered: allow-set should not contain write
-	ap.mu.Lock()
-	has := ap.allowSet["write"]
-	ap.mu.Unlock()
-	if has {
+	if ap.allowSet.Allowed("write", `{"path":"y"}`) {
 		t.Error("y should NOT add to session allow-set (only 'a' does)")
 	}
 }
@@ -30,10 +27,8 @@ func TestApproverAlwaysRemember(t *testing.T) {
 	if !ap.approve(context.Background(), "write", `{"path":"x"}`) {
 		t.Error("a should allow")
 	}
-	ap.mu.Lock()
-	hasWrite := ap.allowSet["write"]
-	hasEdit := ap.allowSet["edit"]
-	ap.mu.Unlock()
+	hasWrite := ap.allowSet.Allowed("write", `{"other":"path"}`)
+	hasEdit := ap.allowSet.Allowed("edit", `{"other":"path"}`)
 	if !hasWrite || !hasEdit {
 		t.Errorf("a on write should set session-wide write/edit allow-set, got write=%v edit=%v", hasWrite, hasEdit)
 	}
@@ -61,9 +56,7 @@ func TestApproverSessionSetSkipsPrompt(t *testing.T) {
 	useColor = false
 	out := &strings.Builder{}
 	ap := newReplApprover(strings.NewReader("n\n"), out) // reader gives "n", but should be short-circuited by allow-set
-	ap.mu.Lock()
-	ap.allowSet["write"] = true
-	ap.mu.Unlock()
+	ap.allowSet.RememberWriteEdit()
 
 	// Should not read from reader (direct allow-set hit)
 	if !ap.approve(context.Background(), "write", `{}`) {

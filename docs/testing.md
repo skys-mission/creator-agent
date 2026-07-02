@@ -18,7 +18,7 @@ go test -cover ./...          # 覆盖率
 |----|--------|------|
 | `cmd/creator-agent/tui` | ~57% | TUI 状态机 + 渲染 |
 | `core/middlewares` | ~89% | 拦截层 |
-| `core/adapters/openai` | ~89% | provider adapter（其余靠真实 API 测） |
+| `core/adapters/openai-chat` · `openai-responses` · `anthropic` | ~89% | 三端 provider adapter（公共层在 `core/adapters/shared`；其余靠真实 API 测） |
 | `core/builtins` | ~84% | 内置工具 |
 | `core` | ~79% | 核心 loop / session / 工具执行 |
 | `config` | ~84% | 配置加载 |
@@ -80,7 +80,7 @@ go test -tags=integration -v ./... -run Real # 🔵 真联网
 
 ### 测试清单
 
-**provider 层**（`core/adapters/openai/integration_realapi_test.go`）—— adapter 流式解析：
+**provider 层**（`core/adapters/openai-responses/integration_realapi_test.go` 等，按 adapter 分目录）—— adapter 流式解析：
 
 | 测试 | 验证 |
 |------|------|
@@ -107,6 +107,21 @@ go test -tags=integration -v ./... -run Real # 🔵 真联网
 - **哨兵串**：`ReadsFile` 在文件里埋唯一随机串（如 `ZEBRA-TANGO-MANGO-7291`），模型不可能瞎猜中。回答含此串 = 真读了文件。
 - **确定性数学**：`DeterministicMath` 用有唯一正确答案的题（12+8=20），断言含正确数字，比开放式问答可靠。
 - **session 记忆**：`MultiTurnSession` 第一轮植入密码，第二轮问，断言回忆正确——验证 `SessionStore` 跨 `Stream` 调用的记忆。
+
+## 2.5 沙箱写隔离冒烟（opt-in，需 bwrap/sandbox-exec）
+
+单元测试只断言沙箱**命令构造**（bwrap/sandbox-exec 参数），不真正执行隔离。真实写隔离由 `sandboxsmoke` build tag 门控的冒烟测试验证：实际调用 OS 沙箱二进制，断言"cwd 内可写、cwd/TMPDIR 外（如 `$HOME`）被拒"。默认 `go test ./...` 不编译它。
+
+```bash
+# macOS 本地（自带 sandbox-exec）
+go test -tags sandboxsmoke -run TestSandboxSmoke ./core/builtins/
+
+# Linux 需先装 bubblewrap
+sudo apt-get install -y bubblewrap
+go test -tags sandboxsmoke -run TestSandboxSmoke ./core/builtins/
+```
+
+CI 有独立 `sandbox-smoke` job（ubuntu，装 bwrap 后跑），与 `test`/`test-macos`/`stress-test` 并列。二进制缺失时测试 `t.Skip`，不误报。
 
 ## 3. 诊断
 
@@ -148,6 +163,23 @@ CA_BIN=./creator-agent make dev-sandbox     # 跳过编译，用已有二进制�
 - **key 不落盘**：脚本从真实 config 的 `default` profile 读出 key（与 `config.Resolve` 一致），经 `OPENAI_API_KEY` 注入进程；已设置的 `OPENAI_API_KEY` 不会被覆盖。沙箱内的 config 副本已把各 profile 的 `api_key` 抹空，磁盘不含密钥。
 - **默认 `default`**：读操作自动通过，写/修改操作会询问确认；需要测自动写能力用 `CA_MODE=auto`（写也只落沙箱内），需要强制只读用 `CA_MODE=readonly`。
 - `CA_KEEP` 只在需要跨次复用同一 session 时才用；保留的沙箱在 `~/.cache/dev-sandboxes/`，手动 `rm -rf` 清理。
+
+### 测首次引导：空配置沙箱（`dev-blank`）
+
+`dev-sandbox` 会把真实 `config.toml`（脱 `api_key`）透传进沙箱并经 env 注入 key，所以 agent 永远检测到"已有配置"，**首次引导路径无法被触发**。要测引导本身（`config.NeedsSetup` → `tui.RunSetupWizard`；非 TTY 走文本引导），用 `dev-blank`——它在同一套隔离骨架上**完全不创建 config、不注入任何 key/env**，强制 `NeedsSetup=true`：
+
+```bash
+make dev-blank                          # TTY: 跑全屏 setup wizard（交互）
+CA_BIN=./creator-agent make dev-blank   # 跳过编译，复用已有二进制
+CA_BLANK=1 scripts/dev-sandbox.sh       # 等价于 make dev-blank
+ARGS='-- "hi"' make dev-blank           # 非 TTY(headless): 打印文本引导后退出
+```
+
+要点：
+
+- **必须 TTY 才能测 wizard**：直接 `make dev-blank`（不带 `ARGS`），stdin/stdout 为终端时进全屏向导；带 `ARGS='-- "..."'` 走 headless 非 TTY 分支，只打印文本引导。
+- **`CA_MODE` 在此无效**：空配置没有可写 `[permissions]` 的文件，权限模式不参与引导阶段。
+- **`CA_KEEP` 与空配置冲突**：引导完成后 setup 会把 config 写进沙箱，保留后再跑就不再触发 wizard；要重测引导，删除该沙箱或换 `CA_KEEP` 名。
 
 ## 给 AI 编码助手的提示
 

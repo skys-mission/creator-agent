@@ -44,8 +44,8 @@ func normalizeGlobSettings(s core.ToolSettings) core.ToolSettings {
 func (g *GlobTool) Info() core.ToolInfo {
 	return core.ToolInfo{
 		Name:            "glob",
-		Description:     "Find files by name pattern (e.g. \"**/*.go\" or \"core/*.go\"). Input: {\"pattern\": \"\"}.",
-		InputSchema:     json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
+		Description:     "Find files by name pattern (e.g. \"**/*.go\" or \"core/*.go\"). Input: {\"pattern\": \"\", \"path\": \"dir to search under (default .)\"}. The pattern is matched relative to path.",
+		InputSchema:     json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"directory to search under (default current directory)"}},"required":["pattern"]}`),
 		ReadOnly:        true,
 		ConcurrencySafe: true,
 		MaxResultChars:  g.settings.MaxResultChars,
@@ -55,6 +55,7 @@ func (g *GlobTool) Info() core.ToolInfo {
 func (g *GlobTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolResult, error) {
 	var args struct {
 		Pattern string `json:"pattern"`
+		Path    string `json:"path"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return invalidInputResult(err), nil
@@ -65,27 +66,46 @@ func (g *GlobTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 	if err := validatePattern(args.Pattern); err != nil {
 		return core.ToolResult{Content: fmt.Sprintf("invalid pattern %q: %v", args.Pattern, err), IsError: true}, nil
 	}
+	if args.Path == "" {
+		args.Path = "."
+	}
+	root, err := resolveToolPath(args.Path)
+	if err != nil {
+		return core.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
 
 	ignoreSet := ignoreSetOf(g.settings.IgnoreDirs)
 
+	// Byte budget bounds in-memory result growth: hardMaxPaths × arbitrarily long paths could still
+	// blow MaxResultChars, so the walk also stops once the accumulated byte size is reached.
+	byteBudget := g.settings.MaxResultChars
+	if byteBudget <= 0 || byteBudget > hardMaxResultChars {
+		byteBudget = hardMaxResultChars
+	}
+
 	patSegs := collapseDoubleStar(strings.Split(args.Pattern, "/"))
 	var matches []string
+	var bytesAccum int
 	var skipped int // directories that could not be inspected (walk errors)
 	stop := false
-	_ = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if stop {
 			return nil
+		}
+		if ctx.Err() != nil {
+			stop = true
+			return filepath.SkipAll // user interrupted; surfaced after the walk
 		}
 		if err != nil {
 			skipped++
 			return nil
 		}
 		if d.IsDir() {
-			if path != "." {
+			if path != root {
 				if _, skip := ignoreSet[d.Name()]; skip {
 					return filepath.SkipDir
 				}
-				if walkDepth(path, ".") > g.settings.MaxDepth {
+				if walkDepth(path, root) > g.settings.MaxDepth {
 					return filepath.SkipDir
 				}
 			}
@@ -94,13 +114,20 @@ func (g *GlobTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 		if shouldSkipByIgnore(path, ignoreSet) {
 			return nil
 		}
-		rel := strings.TrimPrefix(path, "./")
+		// Match the pattern against the path relative to the search root so "*.go" behaves the
+		// same regardless of where the walk started.
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			rel = strings.TrimPrefix(path, "./")
+		}
+		rel = filepath.ToSlash(rel)
 		nameSegs := strings.Split(rel, "/")
 		if matchSegments(patSegs, nameSegs) {
 			matches = append(matches, rel)
-			// Path-count cap: stop the walk early once the hard limit is hit,
+			bytesAccum += len(rel) + 1
+			// Path-count and byte caps: stop the walk early once either hard limit is hit,
 			// preventing unbounded memory growth on huge trees.
-			if len(matches) >= hardMaxPaths {
+			if len(matches) >= hardMaxPaths || bytesAccum >= byteBudget {
 				stop = true
 				return filepath.SkipAll
 			}
@@ -108,12 +135,16 @@ func (g *GlobTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 		return nil
 	})
 
+	if err := ctx.Err(); err != nil {
+		return core.ToolResult{}, err
+	}
 	if len(matches) == 0 {
 		return core.ToolResult{Content: "(no files matched)" + skippedNote(skipped)}, nil
 	}
 	sort.Strings(matches)
-	// Note: large outputs are spilled to disk by the loop layer using MaxResultChars; the tool does not truncate on its own.
-	return core.ToolResult{Content: strings.Join(matches, "\n") + skippedNote(skipped)}, nil
+	// Trim the joined result back to the byte budget on a rune boundary; the loop layer still spills
+	// to disk using MaxResultChars, but the tool honors its own cap first.
+	return core.ToolResult{Content: core.TruncateBytesMaxSafe(strings.Join(matches, "\n"), byteBudget) + skippedNote(skipped)}, nil
 }
 
 // validatePattern checks whether the pattern contains syntax that filepath.Match cannot parse

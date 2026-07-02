@@ -64,8 +64,42 @@ func TestManagerEnabledTools(t *testing.T) {
 	for _, tl := range tools {
 		names[tl.Info().Name] = true
 	}
-	if !names["tool_a"] {
-		t.Errorf("expected tool_a from alpha; got %v", names)
+	// Both servers expose "tool_a", so the colliding name is namespaced per server (server__tool).
+	if !names["alpha__tool_a"] || !names["beta__tool_a"] {
+		t.Errorf("expected namespaced alpha__tool_a and beta__tool_a; got %v", names)
+	}
+}
+
+// TestManagerNamespaceOnlyOnCollision verifies a tool name unique across servers keeps its short
+// name, while a name shared by two servers is namespaced (server__tool).
+func TestManagerNamespaceOnlyOnCollision(t *testing.T) {
+	configs := []ServerConfig{
+		{Name: "alpha", Type: "stdio"},
+		{Name: "beta", Type: "stdio"},
+		{Name: "gamma", Type: "stdio"},
+	}
+	factory := func(ctx context.Context, cfg ServerConfig) (*Client, error) {
+		switch cfg.Name {
+		case "gamma":
+			return newInProcessClient(cfg.Name, nil, registerOneTool("unique"))
+		default: // alpha + beta both expose "shared" -> collision
+			return newInProcessClient(cfg.Name, nil, registerOneTool("shared"))
+		}
+	}
+	m := newManagerWithFactory(context.Background(), configs, factory)
+	defer m.Close()
+	names := map[string]bool{}
+	for _, tl := range m.EnabledTools() {
+		names[tl.Info().Name] = true
+	}
+	if !names["unique"] {
+		t.Errorf("unique name should not be namespaced; got %v", names)
+	}
+	if names["shared"] {
+		t.Errorf("colliding name should be namespaced away; got %v", names)
+	}
+	if !names["alpha__shared"] || !names["beta__shared"] {
+		t.Errorf("expected alpha__shared and beta__shared; got %v", names)
 	}
 }
 

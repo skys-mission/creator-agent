@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"sort"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -93,6 +92,11 @@ func (p *Provider) Stream(ctx context.Context, req core.ModelRequest) (<-chan co
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: items},
 		// Stateless: the agent maintains history and replays it as input items each turn.
 		Store: openai.Bool(false),
+		// Ask the API to return each reasoning item's encrypted_content. This is the only way to
+		// carry a reasoning model's chain-of-thought across turns while staying stateless (store=false):
+		// the encrypted blob is replayed as a reasoning input item on the next turn (see toResponsesInput).
+		// Harmless for non-reasoning models/turns (no reasoning item is produced, nothing is returned).
+		Include: []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
 	}
 	if sys != "" {
 		params.Instructions = openai.String(sys)
@@ -226,14 +230,98 @@ func convertEvent(ev responses.ResponseStreamEventUnion, calls map[string]callIn
 		out = append(out, core.MUsage{Usage: core.Usage{
 			InputTokens:  int(u.InputTokens),
 			OutputTokens: int(u.OutputTokens),
+			// Prompt-cache hits (parity with Anthropic CacheRead / Chat Completions cached_tokens).
+			CacheRead: int(u.InputTokensDetails.CachedTokens),
 		}})
+		// Capture reasoning items (id + encrypted_content) as an opaque replay token so the loop can
+		// persist it on the assistant message and replay it next turn (stateless CoT continuity).
+		if tok := encodeReasoningToken(ev.Response.Output); tok != "" {
+			out = append(out, core.MThinkingSignature{Signature: tok})
+		}
 		out = append(out, core.MFinish{Reason: "stop"})
-	case "response.failed", "response.incomplete":
-		// Surface the failure reason (Response.Error is required on these terminal events).
-		out = append(out, core.MError{Err: fmt.Errorf("responses %s: %s", ev.Type, ev.Response.Error.Message)})
-		out = append(out, core.MFinish{Reason: "stop"})
+	case "response.failed":
+		// Terminal failure: surface the error only. Do NOT append MFinish{stop} — that would tell the
+		// loop the turn ended normally and swallow the error. The loop treats MError as a turn error.
+		out = append(out, core.MError{Err: fmt.Errorf("responses failed: %s", ev.Response.Error.Message)})
+	case "response.incomplete":
+		// Not an error: the model produced partial output that was cut short (e.g. max_output_tokens).
+		// Keep the partial output and finish with the incomplete reason so the loop ends the turn
+		// cleanly instead of aborting the whole run.
+		reason := ev.Response.IncompleteDetails.Reason
+		if reason == "" {
+			reason = "incomplete"
+		}
+		out = append(out, core.MFinish{Reason: reason})
 	case "error":
 		out = append(out, core.MError{Err: fmt.Errorf("responses error %s: %s", ev.Code, ev.Message)})
+	}
+	return out
+}
+
+// reasoningToken is the wire form of a persisted reasoning item, encoded into
+// core.Message.ReasoningToken so it survives session storage and is replayed next turn. The
+// encrypted content is opaque (server-encrypted); summaries are kept so the replayed item is
+// well-formed. A turn may emit several reasoning items, so the token is a JSON array.
+type reasoningToken struct {
+	ID      string   `json:"id"`
+	Enc     string   `json:"enc,omitempty"`
+	Summary []string `json:"sum,omitempty"`
+}
+
+// encodeReasoningToken extracts the reasoning items from a completed response's output and encodes
+// them as a compact JSON array for replay. Returns "" when the turn produced no reasoning item
+// (non-reasoning models, or encrypted_content not returned), leaving the assistant message untouched.
+func encodeReasoningToken(output []responses.ResponseOutputItemUnion) string {
+	var toks []reasoningToken
+	for _, item := range output {
+		if item.Type != "reasoning" {
+			continue
+		}
+		r := item.AsReasoning()
+		if r.EncryptedContent == "" {
+			// Without the encrypted blob the item cannot be replayed statelessly; skip it.
+			continue
+		}
+		t := reasoningToken{ID: r.ID, Enc: r.EncryptedContent}
+		for _, s := range r.Summary {
+			t.Summary = append(t.Summary, s.Text)
+		}
+		toks = append(toks, t)
+	}
+	if len(toks) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(toks)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// reasoningInputItems decodes a ReasoningToken back into replayable reasoning input items. Returns
+// nil on empty/garbled tokens (best-effort: continuity is a nice-to-have, never a hard failure).
+func reasoningInputItems(token string) []responses.ResponseInputItemUnionParam {
+	if token == "" {
+		return nil
+	}
+	var toks []reasoningToken
+	if err := json.Unmarshal([]byte(token), &toks); err != nil {
+		return nil
+	}
+	out := make([]responses.ResponseInputItemUnionParam, 0, len(toks))
+	for _, t := range toks {
+		if t.ID == "" || t.Enc == "" {
+			continue
+		}
+		summary := make([]responses.ResponseReasoningItemSummaryParam, 0, len(t.Summary))
+		for _, s := range t.Summary {
+			summary = append(summary, responses.ResponseReasoningItemSummaryParam{Text: s})
+		}
+		item := responses.ResponseInputItemParamOfReasoning(t.ID, summary)
+		if item.OfReasoning != nil {
+			item.OfReasoning.EncryptedContent = openai.String(t.Enc)
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -258,6 +346,9 @@ func toResponsesInput(msgs []core.Message) (system string, items responses.Respo
 				},
 			})
 		case core.RoleAssistant:
+			// Reasoning items must precede the message/function_call they produced, matching the
+			// original output order, so the model can resume its chain of thought.
+			items = append(items, reasoningInputItems(m.ReasoningToken)...)
 			if m.Content != "" {
 				items = append(items, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
@@ -342,20 +433,10 @@ func variantRequestOptions(headers map[string]string, body map[string]any) []opt
 		return nil
 	}
 	opts := make([]option.RequestOption, 0, len(headers)+len(body))
-	hk := make([]string, 0, len(headers))
-	for k := range headers {
-		hk = append(hk, k)
-	}
-	sort.Strings(hk)
-	for _, k := range hk {
+	for _, k := range shared.SortedStringKeys(headers) {
 		opts = append(opts, option.WithHeader(k, headers[k]))
 	}
-	bk := make([]string, 0, len(body))
-	for k := range body {
-		bk = append(bk, k)
-	}
-	sort.Strings(bk)
-	for _, k := range bk {
+	for _, k := range shared.SortedAnyKeys(body) {
 		opts = append(opts, option.WithJSONSet(k, body[k]))
 	}
 	return opts
@@ -369,14 +450,7 @@ func convertErr(err error) error {
 	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.StatusCode == 429:
-			return &core.RateLimitedError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 500:
-			return &core.ServerError{Err: err, StatusCode: apiErr.StatusCode}
-		case apiErr.StatusCode >= 400:
-			return &core.ClientError{Err: err, StatusCode: apiErr.StatusCode}
-		}
+		return shared.ClassifyStatus(err, apiErr.StatusCode)
 	}
 	return err
 }

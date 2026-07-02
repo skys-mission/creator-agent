@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/diag"
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
@@ -28,6 +25,15 @@ func submitInput(a *App) {
 	// Slash commands are always runnable.
 	if strings.HasPrefix(text, "/") {
 		if handleSlashCommand(a, text) {
+			a.input.SetValue("")
+			return
+		}
+		// A command-like token that is not registered is a typo, not a prompt: intercept it with a
+		// hint instead of forwarding "/unknwon ..." to the model (which wastes a turn and confuses it).
+		// Non-command-like slashes (e.g. an absolute path "/etc/hosts") fall through as normal text.
+		if isSlashCommandLike(text) {
+			name, _, _ := strings.Cut(text, " ")
+			a.addSystem(fmt.Sprintf(i18n.T("msg.unknown_command"), name))
 			a.input.SetValue("")
 			return
 		}
@@ -135,6 +141,9 @@ var commandRegistry = []commandEntry{
 	{name: "/modes", handler: func(a *App, _ string) bool {
 		return handleModeCommand(a, "")
 	}},
+	{name: "/sandbox", hasArg: true, handler: func(a *App, arg string) bool {
+		return handleSandboxCommand(a, arg)
+	}},
 	{name: "/changes", handler: func(a *App, _ string) bool {
 		a.addSystem(renderChangesList(a.changes))
 		return true
@@ -182,6 +191,23 @@ var commandRegistry = []commandEntry{
 	}},
 }
 
+// isSlashCommandLike reports whether text looks like a slash command invocation: a leading '/'
+// followed by a single token of command characters (letters, digits, '-', '_'), optionally followed
+// by whitespace and arguments. This distinguishes "/foo bar" (command-like) from "/etc/hosts" or
+// "/ note" (ordinary text a user may legitimately send to the model).
+func isSlashCommandLike(text string) bool {
+	if len(text) < 2 || text[0] != '/' {
+		return false
+	}
+	name, _, _ := strings.Cut(text, " ")
+	for _, r := range name[1:] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 func findCommand(name string) *commandEntry {
 	for i := range commandRegistry {
 		if commandRegistry[i].name == name {
@@ -198,6 +224,51 @@ func handleSlashCommand(a *App, text string) bool {
 		return false
 	}
 	return entry.handler(a, arg)
+}
+
+// handleSandboxCommand implements /sandbox [on|off|auto]:
+//   - no arg: report the current override state;
+//   - on/off: force OS bash isolation on or off for this session;
+//   - auto: clear the override and follow the base policy (config tri-state + permission mode).
+//
+// The override is shared with the bash tool's PolicySandbox, so it takes effect on the next command
+// with no agent rebuild.
+func handleSandboxCommand(a *App, arg string) bool {
+	if a.rt.sandboxCtl == nil {
+		a.addSystem("Sandbox control is not available in this session.")
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "":
+		a.addSystem("Sandbox override: " + sandboxOverrideLabel(a.rt.sandboxCtl.Override()) +
+			"\nUse /sandbox on|off|auto. 'auto' follows the config + permission mode policy (isolation on in auto mode).")
+	case "on", "true", "enable", "enabled":
+		v := true
+		a.rt.sandboxCtl.Set(&v)
+		a.addSystem("Sandbox override set to ON: bash commands run OS-isolated (fails closed if unavailable).")
+	case "off", "false", "disable", "disabled":
+		v := false
+		a.rt.sandboxCtl.Set(&v)
+		a.addSystem("Sandbox override set to OFF: bash commands run without OS isolation.")
+	case "auto", "reset", "clear", "default":
+		a.rt.sandboxCtl.Set(nil)
+		a.addSystem("Sandbox override cleared: following the config + permission mode policy.")
+	default:
+		a.addSystem("Usage: /sandbox [on|off|auto]")
+	}
+	a.forceRender = true
+	return true
+}
+
+// sandboxOverrideLabel renders the tri-state override for display.
+func sandboxOverrideLabel(ov *bool) string {
+	if ov == nil {
+		return "auto (following policy)"
+	}
+	if *ov {
+		return "on (forced)"
+	}
+	return "off (forced)"
 }
 
 func handleToolsCommand(a *App) {
@@ -739,274 +810,6 @@ func sessionMutator(s core.SessionStore) core.SessionMetaMutator {
 	return nil
 }
 
-// mentionFileCap bounds how many bytes of a referenced file are injected, to protect the context
-// budget (a huge file shouldn't flood the model). Files larger than this are skipped entirely.
-const mentionFileCap = 64 * 1024
-
-// mentionTokenRe matches an @path or @path#N or @path#N-M reference at the start of input or after
-// whitespace. The captured token (after '@') is non-whitespace, non-@, and may carry a trailing
-// #range. Used at submit-time to resolve references (not for the live popup, which uses the
-// stricter mentionTriggerIndex on the in-progress input).
-var mentionTokenRe = regexp.MustCompile(`(?:^|\s)@([^\s@]+)`)
-
-func resolveMentions(text string) string {
-	var blocks []string
-	seen := map[string]bool{}
-	for _, m := range mentionTokenRe.FindAllStringSubmatchIndex(text, -1) {
-		// m[2],m[3] = the captured token after '@'.
-		token := text[m[2]:m[3]]
-		path, start, end, hasRange := parseMentionRange(token)
-		if path == "" {
-			continue
-		}
-		// Avoid duplicate work for the same (path, range) reference.
-		key := token
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		if strings.HasSuffix(path, "/") {
-			continue
-		}
-		if block, ok := readMentionBlock(path, start, end, hasRange); ok {
-			blocks = append(blocks, block)
-		}
-	}
-	if len(blocks) == 0 {
-		return text
-	}
-	var sb strings.Builder
-	sb.WriteString(text)
-	sb.WriteString(i18n.T("mention.header"))
-	sb.WriteString(strings.Join(blocks, "\n"))
-	return sb.String()
-}
-
-// readMentionBlock reads the file at path (relative to cwd), optionally slices it to the 1-indexed
-// inclusive [start, end] line range, and formats it as a <path>/<content> block with line numbers.
-// ok is false when the file is missing/unreadable/oversized (best-effort skip).
-func readMentionBlock(path string, start, end int, hasRange bool) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	if len(data) > mentionFileCap {
-		return "", false // protect the context budget
-	}
-	lines := strings.Split(string(data), "\n")
-	lo, hi := 1, len(lines)
-	if hasRange {
-		lo = start
-		if lo < 1 {
-			lo = 1
-		}
-		if end > 0 {
-			hi = end
-		} else if end == 0 && !strings.HasSuffix(path, "#") {
-			hi = start
-		}
-		if hi > len(lines) {
-			hi = len(lines)
-		}
-		if lo > hi {
-			lo = hi
-		}
-	}
-	var sb strings.Builder
-	sb.WriteString("<path>")
-	sb.WriteString(path)
-	sb.WriteString("</path>\n<content>\n")
-	for i := lo; i <= hi; i++ {
-		sb.WriteString(strconv.Itoa(i))
-		sb.WriteString(": ")
-		sb.WriteString(lines[i-1])
-		sb.WriteString("\n")
-	}
-	sb.WriteString("</content>")
-	return sb.String(), true
-}
-
-// fileIgnoreDirs mirrors the glob/grep tools' defaultIgnoreDirs (core/builtins/grep.go). Kept as a
-// local copy to avoid a tui -> core/builtins dependency (tui already imports core, but pulling the
-// builtins package in just for this list would widen the dependency surface unnecessarily).
-var fileIgnoreDirs = []string{".git", "vendor", "node_modules", "dist", "build"}
-
-// fileIndexCap bounds the number of paths indexed. A typical project is well under this; huge
-// monorepos would make the popup sluggish and the popup caps display at 10 anyway.
-const fileIndexCap = 2000
-
-func buildFileIndex(root string) []string {
-	ignoreSet := make(map[string]struct{}, len(fileIgnoreDirs))
-	for _, d := range fileIgnoreDirs {
-		ignoreSet[d] = struct{}{}
-	}
-	var out []string
-	stop := false
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || stop {
-			return nil
-		}
-		if d.IsDir() {
-			if path != root {
-				if _, skip := ignoreSet[d.Name()]; skip {
-					return filepath.SkipDir
-				}
-				rel, _ := filepath.Rel(root, path)
-				rel = filepath.ToSlash(rel)
-				out = append(out, rel+"/")
-				if len(out) >= fileIndexCap {
-					stop = true
-					return filepath.SkipAll
-				}
-			}
-			return nil
-		}
-		if shouldSkipFile(d.Name()) {
-			return nil
-		}
-		rel, _ := filepath.Rel(root, path)
-		rel = filepath.ToSlash(rel)
-		out = append(out, rel)
-		if len(out) >= fileIndexCap {
-			stop = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	sort.Strings(out)
-	return out
-}
-
-func shouldSkipFile(name string) bool {
-	switch name {
-	case ".DS_Store", "Thumbs.db":
-		return true
-	}
-	switch filepath.Ext(name) {
-	case ".pyc", ".swp", ".swo", ".log":
-		return true
-	}
-	return false
-}
-
-// getFileIndex returns the cached file index for root, rebuilding it when the cache is empty or
-// the root directory's mtime changed since the last build. All file-system access is contained
-// here so callers can treat it as a pure lookup keyed on (root, root-mtime).
-func getFileIndex(a *App, root string) []string {
-	info, err := os.Stat(root)
-	if err != nil {
-		a.fileIndexDir = ""
-		a.fileIndex = nil
-		return nil
-	}
-	mtime := info.ModTime()
-	if a.fileIndex != nil && a.fileIndexDir == root && eqTime(a.fileIndexMtime, mtime) {
-		return a.fileIndex
-	}
-	a.fileIndex = buildFileIndex(root)
-	a.fileIndexDir = root
-	a.fileIndexMtime = mtime
-	return a.fileIndex
-}
-
-// eqTime reports whether two ModTimes are equal at second precision. Sub-second drift from FS
-// metadata reads should not trigger redundant rebuilds.
-func eqTime(a, b time.Time) bool {
-	return a.Unix() == b.Unix()
-}
-
-// mentionTriggerIndex finds the index of the `@` that should open the file-mention popup, or -1.
-// Rules (mirror opencode's prompt/display.ts:mentionTriggerIndex):
-//   - the `@` must be at position 0 OR immediately preceded by whitespace;
-//   - there must be no whitespace between the `@` and the end of input (the user is still typing
-//     the path token).
-//
-// Returns the byte index of the triggering `@`, or -1 when no trigger applies.
-func mentionTriggerIndex(v string) int {
-	// Only the last `@` matters (the one nearest the cursor / end of input).
-	idx := strings.LastIndex(v, "@")
-	if idx < 0 {
-		return -1
-	}
-	// Must be at start or preceded by whitespace.
-	if idx > 0 {
-		prev := v[idx-1]
-		if prev != ' ' && prev != '\t' && prev != '\n' {
-			return -1
-		}
-	}
-	tail := v[idx+1:]
-	if strings.ContainsAny(tail, " \t\n") {
-		return -1
-	}
-	return idx
-}
-
-func extractMentionQuery(v string) string {
-	idx := mentionTriggerIndex(v)
-	if idx < 0 {
-		return ""
-	}
-	return v[idx+1:]
-}
-
-var mentionRangeRe = regexp.MustCompile(`^#(\d+)(?:-(\d*))?$`)
-
-// parseMentionRange splits a mention query into its base path and an optional line range. ok is
-// true when the query ends with a parseable `#N` / `#N-M` suffix. start is always the 1-indexed
-// start line; end is the 1-indexed end line (0 means "single line / open-ended" when the suffix
-// was `#N` or `#N-`).
-func parseMentionRange(query string) (base string, start, end int, ok bool) {
-	hash := strings.LastIndex(query, "#")
-	if hash < 0 {
-		return query, 0, 0, false
-	}
-	m := mentionRangeRe.FindStringSubmatch(query[hash:])
-	if m == nil {
-		return query, 0, 0, false
-	}
-	base = query[:hash]
-	start = atoi(m[1])
-	if m[2] != "" {
-		end = atoi(m[2])
-	}
-	return base, start, end, true
-}
-
-func preserveMentionSuffix(query, sel string) (suffix string, ok bool) {
-	if !strings.HasPrefix(query, sel) {
-		return "", false
-	}
-	rest := query[len(sel):]
-	if rest == "" {
-		return "", false
-	}
-	if mentionRangeRe.MatchString(rest) {
-		return rest, true
-	}
-	return "", false
-}
-
-func stripMentionRange(query string) string {
-	base, _, _, ok := parseMentionRange(query)
-	if !ok {
-		return query
-	}
-	return base
-}
-
-// atoi is a local Atoi (avoids importing strconv for a single use); returns 0 on non-numeric.
-func atoi(s string) int {
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
-}
-
 // compactDoneMsg carries the result of an async manual compact. rawOut is the new message list from
 // the compactor (nil on error). Runs on the event loop.
 type compactDoneMsg struct {
@@ -1101,183 +904,6 @@ func LogCrashToDisk(r interface{}, stack []byte) {
 	logCrashToFile(r, stack)
 }
 
-// slashCommands is lazily populated on first access (to avoid init-order dependency on
-// commandRegistry, which is defined in commands.go). Once populated it is immutable.
-var slashCommands []string
-
-func getSlashCommands() []string {
-	if slashCommands == nil {
-		out := make([]string, 0, len(commandRegistry))
-		for _, e := range commandRegistry {
-			out = append(out, e.name)
-		}
-		slashCommands = out
-	}
-	return slashCommands
-}
-
-func matchCommands(prefix string) []string {
-	var out []string
-	for _, c := range getSlashCommands() {
-		if strings.HasPrefix(c, prefix) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-func commandDesc(c string) string {
-	if e := findCommand(c); e != nil {
-		return i18n.T("cmd.desc." + c)
-	}
-	return ""
-}
-
-func matchCommandsFuzzy(query string) []string {
-	q := normalizeLower(strings.TrimSpace(query))
-	q = strings.TrimPrefix(q, "/")
-	if q == "" {
-		out := make([]string, len(getSlashCommands()))
-		copy(out, getSlashCommands())
-		return out
-	}
-	type scored struct {
-		name  string
-		score int
-	}
-	var hits []scored
-	for _, c := range getSlashCommands() {
-		s, ok := fuzzyScore(c, commandDesc(c), q)
-		if !ok || s <= 0 {
-			continue
-		}
-		hits = append(hits, scored{name: c, score: s})
-	}
-	// Stable descending sort by score (insertion sort; the list is tiny). Stability preserves the
-	for i := 1; i < len(hits); i++ {
-		for j := i; j > 0 && hits[j].score > hits[j-1].score; j-- {
-			hits[j], hits[j-1] = hits[j-1], hits[j]
-		}
-	}
-	out := make([]string, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, h.name)
-	}
-	return out
-}
-
-func refineSlashCompletions(a *App) {
-	v := a.input.Value()
-	if !shouldShowSlashCompletions(v) {
-		a.completions = nil
-		a.completionsKind = compNone
-		a.compIdx = 0
-		a.compScroll = 0
-		return
-	}
-	a.completions = matchCommandsFuzzy(v)
-	a.completionsKind = compSlash
-	a.compIdx = 0 // reset to top row on every refine (matches opencode)
-	a.compScroll = 0
-}
-
-// shouldShowSlashCompletions reports whether the inline slash popup should be open for input v:
-// the input must start with "/" and contain no whitespace (so "/help foo" hides the menu — the
-// user has moved on to arguments). A lone "/" opens the menu with all commands (empty query) for
-// discoverability. Mirrors opencode's "/"-trigger condition.
-func shouldShowSlashCompletions(v string) bool {
-	if !strings.HasPrefix(v, "/") {
-		return false
-	}
-	return !strings.ContainsAny(v, " \t\n")
-}
-
-// refineFileCompletions recomputes the @-mention file candidate list from the current input.
-// When the input no longer has a triggering `@` token, the menu is closed. The file index is
-// pulled from the working-directory cache (fileindex.go).
-func refineFileCompletions(a *App) {
-	v := a.input.Value()
-	if !shouldShowFileCompletions(v) {
-		a.completions = nil
-		a.completionsKind = compNone
-		a.compIdx = 0
-		a.compScroll = 0
-		return
-	}
-	q := normalizeLower(stripMentionRange(extractMentionQuery(v)))
-	idx := getFileIndex(a, ".")
-	a.completions = matchFilesFuzzy(idx, q)
-	a.completionsKind = compFile
-	a.compIdx = 0
-	a.compScroll = 0
-}
-
-// shouldShowFileCompletions reports whether the @-mention popup should be open for input v: there
-// must be a triggering `@` (per mentionTriggerIndex rules) with the user still typing the path
-// token (no whitespace after it).
-func shouldShowFileCompletions(v string) bool {
-	return mentionTriggerIndex(v) >= 0
-}
-
-func matchFilesFuzzy(files []string, query string) []string {
-	const cap = 10
-	if query == "" {
-		out := make([]string, 0, cap)
-		for _, f := range files {
-			out = append(out, f)
-			if len(out) >= cap {
-				break
-			}
-		}
-		return out
-	}
-	type scored struct {
-		path  string
-		score int
-	}
-	var hits []scored
-	for _, f := range files {
-		s, ok := fuzzyScore(f, "", query)
-		if !ok || s <= 0 {
-			continue
-		}
-		s += maxi(0, 40-len(f))
-		hits = append(hits, scored{path: f, score: s})
-	}
-	for i := 1; i < len(hits); i++ {
-		for j := i; j > 0 && hits[j].score > hits[j-1].score; j-- {
-			hits[j], hits[j-1] = hits[j-1], hits[j]
-		}
-	}
-	out := make([]string, 0, cap)
-	for _, h := range hits {
-		out = append(out, h.path)
-		if len(out) >= cap {
-			break
-		}
-	}
-	return out
-}
-
-// refineCompletions is the single dispatcher called after every input mutation: it decides
-// whether the slash popup, the file-mention popup, or neither should be open, and updates
-// a.completions / a.completionsKind accordingly. Slash takes precedence over file (a leading "/"
-// never also triggers "@").
-func refineCompletions(a *App) {
-	v := a.input.Value()
-	switch {
-	case shouldShowSlashCompletions(v):
-		refineSlashCompletions(a)
-	case shouldShowFileCompletions(v):
-		refineFileCompletions(a)
-	default:
-		a.completions = nil
-		a.completionsKind = compNone
-		a.compIdx = 0
-		a.compScroll = 0
-	}
-}
-
 func renderChangesList(changes []changeRecord) string {
 	if len(changes) == 0 {
 		return "No file changes in this session."
@@ -1367,63 +993,4 @@ func openApprovalDiffOverlay(a *App) {
 	a.diffOverlay.title = title
 	a.diffOverlay.lines = strings.Split(body, "\n")
 	a.diffOverlay.scrollY = 0
-}
-
-func historyPath() (string, bool) {
-	p, err := paths.HistoryFile()
-	if err != nil {
-		return "", false
-	}
-	return p, true
-}
-
-// loadHistory loads input history from disk (nil on missing/corrupt).
-func loadHistory() []string {
-	p, ok := historyPath()
-	if !ok {
-		return nil
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	var h []string
-	if json.Unmarshal(data, &h) != nil {
-		return nil
-	}
-	return h
-}
-
-// saveHistory persists input history (best-effort; failures are logged for diagnosis).
-func saveHistory(h []string) {
-	p, ok := historyPath()
-	if !ok {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		core.Warnf("save TUI history: mkdir: %v", err)
-		return
-	}
-	data, err := json.Marshal(h)
-	if err != nil {
-		core.Warnf("save TUI history: marshal: %v", err)
-		return
-	}
-	if err := os.WriteFile(p, data, 0o600); err != nil {
-		core.Warnf("save TUI history: write: %v", err)
-	}
-}
-
-func appendHistory(h []string, s string) []string {
-	if s == "" {
-		return h
-	}
-	if len(h) > 0 && h[len(h)-1] == s {
-		return h
-	}
-	h = append(h, s)
-	if len(h) > 1000 {
-		h = h[len(h)-1000:]
-	}
-	return h
 }

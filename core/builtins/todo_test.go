@@ -10,6 +10,39 @@ import (
 	"github.com/skys-mission/creator-agent/core"
 )
 
+// TestTodoToolSessionIsolation verifies todo_write scopes its list by the ctx-carried session ID,
+// so two sessions keep independent lists and neither leaks into the default bucket.
+func TestTodoToolSessionIsolation(t *testing.T) {
+	store := NewTodoStore()
+	tool := NewTodoTool(store)
+
+	ctxA := core.WithSessionID(context.Background(), "sesA")
+	ctxB := core.WithSessionID(context.Background(), "sesB")
+	if _, err := tool.Exec(ctxA, json.RawMessage(`{"todos":[{"content":"task A","status":"pending"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Exec(ctxB, json.RawMessage(`{"todos":[{"content":"task B","status":"pending"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get("sesA"); len(got) != 1 || got[0].Content != "task A" {
+		t.Errorf("sesA = %+v, want [task A]", got)
+	}
+	if got := store.Get("sesB"); len(got) != 1 || got[0].Content != "task B" {
+		t.Errorf("sesB = %+v, want [task B]", got)
+	}
+	if got := store.Get(todoDefaultSession); got != nil {
+		t.Errorf("default bucket should be empty, got %+v", got)
+	}
+
+	// No session in ctx -> default bucket.
+	if _, err := tool.Exec(context.Background(), json.RawMessage(`{"todos":[{"content":"task C","status":"pending"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(todoDefaultSession); len(got) != 1 || got[0].Content != "task C" {
+		t.Errorf("default = %+v, want [task C]", got)
+	}
+}
+
 // ===== TodoStore =====
 
 func TestTodoStoreGetSetClear(t *testing.T) {

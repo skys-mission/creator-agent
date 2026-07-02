@@ -116,6 +116,53 @@ func TestToResponsesToolChoice(t *testing.T) {
 	}
 }
 
+// TestReasoningTokenRoundTrip verifies the encrypted-reasoning replay path: a completed response's
+// reasoning item is encoded into an opaque token, and that token is decoded back into a reasoning
+// input item (id + encrypted_content) that precedes the assistant's content on the next turn.
+func TestReasoningTokenRoundTrip(t *testing.T) {
+	// Build a response output with one reasoning item carrying encrypted content + a summary.
+	raw := `{"type":"reasoning","id":"rs_1","encrypted_content":"ENC","summary":[{"type":"summary_text","text":"why"}]}`
+	var item responses.ResponseOutputItemUnion
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		t.Fatalf("unmarshal output item: %v", err)
+	}
+	token := encodeReasoningToken([]responses.ResponseOutputItemUnion{item})
+	if token == "" {
+		t.Fatal("expected a non-empty reasoning token")
+	}
+
+	// The token, carried on an assistant message, must replay as a leading reasoning input item.
+	_, items := toResponsesInput([]core.Message{
+		{Role: core.RoleAssistant, Content: "answer", ReasoningToken: token},
+	})
+	if len(items) < 2 || items[0].OfReasoning == nil {
+		t.Fatalf("expected a leading reasoning input item, got %+v", items)
+	}
+	r := items[0].OfReasoning
+	if r.ID != "rs_1" || r.EncryptedContent.Value != "ENC" {
+		t.Fatalf("reasoning item not replayed faithfully: %+v", r)
+	}
+	if len(r.Summary) != 1 || r.Summary[0].Text != "why" {
+		t.Fatalf("reasoning summary not replayed: %+v", r.Summary)
+	}
+}
+
+// TestReasoningTokenSkipsWithoutEncryption verifies that reasoning items lacking encrypted_content
+// (e.g. include not honored by a compatible endpoint) produce no token, leaving history untouched.
+func TestReasoningTokenSkipsWithoutEncryption(t *testing.T) {
+	raw := `{"type":"reasoning","id":"rs_1","summary":[]}`
+	var item responses.ResponseOutputItemUnion
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tok := encodeReasoningToken([]responses.ResponseOutputItemUnion{item}); tok != "" {
+		t.Fatalf("expected empty token without encrypted_content, got %q", tok)
+	}
+	if items := reasoningInputItems("not json"); items != nil {
+		t.Fatalf("garbled token should decode to nil, got %+v", items)
+	}
+}
+
 func TestToResponsesInput_ToolResult(t *testing.T) {
 	_, items := toResponsesInput([]core.Message{
 		core.ToolMessage("result", "call_1", "bash"),

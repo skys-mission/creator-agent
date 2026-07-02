@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -117,6 +118,10 @@ func (s *Skills) LoadAll() []Skill {
 	for _, sk := range byName {
 		out = append(out, sk)
 	}
+	// Deterministic order (by name): the skills summary is injected into the system prompt, so a
+	// random map-iteration order would reshuffle the prompt every turn and defeat the model's
+	// prompt-prefix (KV) cache. Sorting keeps the prefix stable across turns.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

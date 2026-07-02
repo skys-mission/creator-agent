@@ -11,6 +11,12 @@ import (
 	"github.com/skys-mission/creator-agent/core"
 )
 
+// bashResultThreshold is the byte size above which bash spills its combined output to a temp file
+// and returns a bounded preview + pointer instead. It matches the tool's MaxResultChars so success
+// results behave the same whether bash or the loop layer performs the spill; unlike the loop layer,
+// bash applies it to error results too (a failing command's large stderr must not flood the context).
+const bashResultThreshold = 20000
+
 // BashTool executes shell commands.
 //
 // Capability: write + not concurrency-safe (commands may have side effects or dependencies).
@@ -66,7 +72,7 @@ func (b *BashTool) Info() core.ToolInfo {
 }`),
 		ReadOnly:        false,
 		ConcurrencySafe: false,
-		MaxResultChars:  20000,
+		MaxResultChars:  bashResultThreshold,
 	}
 }
 
@@ -111,7 +117,10 @@ func (b *BashTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 	runErr := cmd.Run()
 	output := out.String()
 
-	// Note: large outputs are spilled to disk by the loop layer using MaxResultChars; the tool does not truncate on its own.
+	// Bound very large output here (both success and failure): spill the full text to a temp file and
+	// keep only a preview + pointer. Doing it in the tool — not just the loop layer — is what lets
+	// error results stay bounded, since the loop-layer spill deliberately skips IsError.
+	output, _ = core.SpillLargeOutput("bash", output, bashResultThreshold)
 
 	if runErr != nil {
 		// Command failure (non-zero exit) -> IsError so the model sees stderr and can correct.

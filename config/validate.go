@@ -41,6 +41,15 @@ func (c *Config) validate() []string {
 		}
 	}
 
+	if name := strings.TrimSpace(c.Compaction.Profile); name != "" {
+		if _, ok := c.Profiles[name]; !ok {
+			w = append(w, fmt.Sprintf("compaction.profile %q is not defined under [profiles] (have: %v); compaction will use the agent model", name, profileNames(c.Profiles)))
+		}
+	}
+	if c.Compaction.Threshold > 0 && c.Compaction.ContextWindow > 0 && c.Compaction.Threshold >= c.Compaction.ContextWindow {
+		w = append(w, fmt.Sprintf("compaction.threshold (%d) >= compaction.context_window (%d); compaction may trigger too late to fit the window", c.Compaction.Threshold, c.Compaction.ContextWindow))
+	}
+
 	return w
 }
 

@@ -53,8 +53,8 @@ func normalizeGrepSettings(s core.ToolSettings) core.ToolSettings {
 func (g *GrepTool) Info() core.ToolInfo {
 	return core.ToolInfo{
 		Name:            "grep",
-		Description:     "Search file contents with a regex. Input: {\"pattern\": \"regex\", \"path\": \"dir or file (default .)\"}. Returns path:line: match.",
-		InputSchema:     json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}`),
+		Description:     "Search file contents with a regex. Input: {\"pattern\": \"regex\", \"path\": \"dir or file (default .)\", \"case_insensitive\": false, \"literal\": false}. Returns path:line: match.",
+		InputSchema:     json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case_insensitive":{"type":"boolean","description":"match case-insensitively (default false)"},"literal":{"type":"boolean","description":"treat pattern as a literal string, not a regex (default false)"}},"required":["pattern"]}`),
 		ReadOnly:        true,
 		ConcurrencySafe: true,
 		MaxResultChars:  g.settings.MaxResultChars,
@@ -63,8 +63,10 @@ func (g *GrepTool) Info() core.ToolInfo {
 
 func (g *GrepTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolResult, error) {
 	var args struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path"`
+		Pattern         string `json:"pattern"`
+		Path            string `json:"path"`
+		CaseInsensitive bool   `json:"case_insensitive"`
+		Literal         bool   `json:"literal"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return invalidInputResult(err), nil
@@ -80,7 +82,14 @@ func (g *GrepTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 		return core.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 
-	re, err := regexp.Compile(args.Pattern)
+	expr := args.Pattern
+	if args.Literal {
+		expr = regexp.QuoteMeta(expr)
+	}
+	if args.CaseInsensitive {
+		expr = "(?i)" + expr
+	}
+	re, err := regexp.Compile(expr)
 	if err != nil {
 		return core.ToolResult{Content: "bad regex: " + err.Error(), IsError: true}, nil
 	}
@@ -99,6 +108,9 @@ func (g *GrepTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 	var bytesAccum int
 	var skipped int // paths that could not be inspected (walk errors / unreadable files)
 	_ = filepath.WalkDir(resolved, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll // user interrupted; stop walking and surface below
+		}
 		if err != nil {
 			skipped++
 			return nil
@@ -142,6 +154,9 @@ func (g *GrepTool) Exec(ctx context.Context, input json.RawMessage) (core.ToolRe
 		return nil
 	})
 
+	if err := ctx.Err(); err != nil {
+		return core.ToolResult{}, err
+	}
 	if len(matches) == 0 {
 		return core.ToolResult{Content: "(no matches)" + skippedNote(skipped)}, nil
 	}
