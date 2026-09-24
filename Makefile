@@ -1,7 +1,8 @@
 .PHONY: build test test-fast test-cover bench vet fmt tidy clean help
 
-# 当前没有 main 包（CLI 入口待重建），build 只做编译检查。
-build: ## 编译检查（暂无可执行入口）
+# 构建一体二进制（默认本机直调交互 / serve 开 gRPC / rpc 待 P4），并保留全仓编译检查。
+build: ## 构建 creator-agent 二进制 + 全仓编译检查
+	go build -o creator-agent ./cmd/creator-agent
 	go build ./...
 
 test: ## 跑全部测试（含 race 检测）
