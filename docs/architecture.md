@@ -1,0 +1,308 @@
+# 基础架构设计（v3 终版）
+
+> 新基调：**开源 Agent 核心项目**。核心是 agent 运行时内核；CLI 是产品交互外壳，与内核
+> **一体单二进制**。初期产品形态 = **本机调用**（进程内直调，不走网络）。桌面端 / 编辑器走
+> **自研协议**（stdio JSON-RPC）；远程 / webui 走 **gRPC（HTTP/2，初期 h2c 免证书）**。
+> Lua 插件扩展；本地配置管理不用 sqlite。HTTP/3 不走。
+
+设计三原则（贯穿全文）：
+
+1. **工程化**：每模块职责、输入输出、可单测；正确性靠结构与测试保证，不靠调参试错。
+2. **不过度封装**：接口只放真正的变化边界（模型厂商、Lua VM、存储、传输）；其余用具体类型。
+3. **可扩展**：扩展点只有三个——Lua 插件、模型适配层、传输通道；都是"窄接口 + 具体实现"。
+
+**依赖纪律（锁定）**：服务端流量底座只有官方 `google.golang.org/grpc`（grpc-go）+ 标准库。
+**不引入 Hertz / Gin / Echo / Fiber 等通用 HTTP 与服务框架，也不引入任何 RPC 包装库**；
+缺什么能力就在 `server/` 里写薄层（token 拦截器、限额都是这么来的）。
+
+---
+
+## 0. 决策记录（本轮定案）
+
+| 决策 | 内容 | 备注 |
+|---|---|---|
+| 产品形态 | 单二进制一体：CLI 即产品，运行时内核同进程；默认本机直调 | 网络能力一起打包，但 CLI 正常使用**永不监听**，仅 `serve` 开启 |
+| 桌面/编辑器通道 | **自研协议**：JSON-RPC 2.0 信封 + 自家词汇 + stdio + schema 版本化 | 不用 ACP——标准功能面固定、演进节奏不可控；自研换完全控制权 |
+| 网络面 | **gRPC over HTTP/2**（grpc-go），初期 **h2c 免证书** | HTTP/3 搁置（gRPC 主场是 HTTP/2）；Hertz 不引入（gRPC 场景不需要 HTTP 框架） |
+| 安全 | **授权天花板在 agent 侧** + 网络面三道闸（不暴露 / 验身份 / 限权限） | 见 §8 |
+| 插件 | Lua，用 **lunar**（锁 commit + VM 窄接口隔离） | lunar 是纯 Go Lua 5.1 VM，非插件框架；插件宿主自建 |
+| 配置 | 分层 TOML + 版本迁移 + 秘密分离；**不用 sqlite** | 会话数据 JSONL |
+| 契约 | **.proto 单一事实来源**（buf + 代码生成） | 生成 Go 类型；stdio 通道用 protojson，gRPC 通道用 protobuf |
+| 生命周期 | `kernel/` 保留原样，当内核骨架 | 注册 / 依赖序启动 / 逆序销毁 / 失败回滚 |
+| Go SDK | ACP 已不用；gRPC 官方有 Go 支持（grpc-go），无缺口 | 自研 stdio 协议的 Go 实现全部自写 |
+
+---
+
+## 1. 总体结构
+
+```
+                ┌───────────────────── 使用面 ─────────────────────┐
+                │ CLI/TUI(产品本体)   桌面端/编辑器   webui(未来)   │
+                └───────┬──────────────────┬────────────────┬─────┘
+                  进程内直调(默认)    自研协议(stdio)      gRPC(HTTP/2)
+                        ▼                  ▼                  ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ core/      agent 运行时：会话、agent loop、工具执行、权限、配置、Lua 插件   │
+├──────────────────────────────────────────────────────────────────────────┤
+│ adapters/  模型厂商适配层（唯一允许 import provider SDK 的地方）            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ contract/  .proto 生成的领域模型 + 线上协议形状（无逻辑，所有端共享）        │
+│ kernel/    组件生命周期：注册 / 依赖序启动 / 逆序销毁 / 失败回滚（保留）      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+依赖方向单向：通道实现（stdio 协议 / gRPC）→ core → (contract, kernel)；
+`adapters` 实现 core 定义的窄接口；`contract` / `kernel` 不依赖内部包；kernel 只用标准库。
+装配只在 `cmd/`。
+
+### 包布局
+
+```
+cmd/
+  creator-agent/          一体入口（单二进制）：默认本机交互（TUI/REPL，进程内直调）；
+                          serve 开 gRPC 监听；rpc 子命令 = 自研 stdio 协议模式（被桌面/编辑器拉起）
+server/
+  ├── grpc/               gRPC 服务实现（薄：解析 → 调 core → 流回事件）
+  ├── rpc/                自研 stdio 协议：JSON-RPC 分发 + 会话桥
+  ├── auth/               token 生成/校验、拦截器、（将来）TLS
+  └── limits/             消息/并发/长流/限速等加固配置
+core/
+  ├── runtime/            agent loop（真正的运行时核心）
+  ├── session/            会话与消息持久化（JSONL）
+  ├── tools/              工具系统：内置工具 + 注册表 + 沙箱执行
+  ├── perms/              权限与授权流（天花板策略：Mode / AllowSet / Ask）
+  ├── config/             分层配置管理（见 §6）
+  └── plugins/            Lua 插件宿主
+      └── luavm/          VM 窄接口（lunar 实现，可整体替换）
+adapters/                 模型适配（anthropic / openai / …）
+contract/                 proto 生成类型 + 少量叶子助手（会话 ID、路径等）
+kernel/                   生命周期框架（保留，原样）
+```
+
+---
+
+## 2. 三个通道（功能一份，入口三种）
+
+core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Config`/`Plugins` 服务面），
+**唯一功能面**——三个通道都只是它的消费者，谁都不许在自己身上重写逻辑。
+
+| 通道 | 谁用 | 机制 | 安全面 |
+|---|---|---|---|
+| **进程内直调**（默认，产品形态） | 本机 CLI / TUI / 未来桌面嵌入内核 | 直接调 core 方法，事件走 Go channel | 无网络，无攻击面 |
+| **自研 stdio 协议** | 桌面端 / 编辑器插件拉起 `creator-agent rpc` 子进程 | JSON-RPC 2.0 over stdio，protojson 编码 | 父子进程信任，无端口无暴露 |
+| **gRPC 网络面**（`serve` 按需开启） | webui / 远程 / 跨机器 | gRPC over HTTP/2（初期 h2c） | 三道闸，见 §8 |
+
+三通道共用同一份 `contract` 类型与事件流（channel / stdio 通知 / gRPC stream 只是搬运方式不同）。
+
+---
+
+## 3. 自研协议（桌面 / 编辑器通道）
+
+**信封**：JSON-RPC 2.0（request / response / notification）。**词汇自家设计**，proto schema 定义、
+版本化（v1 起），JSON 编码走 protojson。
+
+### 方法面（v1）
+
+| 方法 | 方向 | 用途 |
+|---|---|---|
+| `initialize` | 握手 | 协商协议版本 + 能力声明 |
+| `session/new` · `session/resume` | 请求 | 建会话 / 恢复（可回放历史） |
+| `session/prompt` | 请求 | 发一条消息，驱动一个 turn |
+| `session/cancel` | 通知 | 打断当前 turn |
+| `session/close` · `session/list` | 请求 | 关会话 / 列会话 |
+| `session/update` | 通知（下行流） | 文本增量 / 工具调用状态 / 计划 / 用量 |
+| `session/request_permission` | 请求（上行） | 授权询问，选项：allow_once / allow_always / reject_once / reject_always |
+| `rpc/elicitation` | 请求（上行） | 向用户要结构化输入（如填分支名） |
+
+### 兼容与扩展规则
+
+- 版本协商在 `initialize`；**未知通知安全忽略，未知请求回 `-32601 Method not found`**；
+- 自有扩展走 `_creator.dev/*` 命名空间方法 + `_meta` 字段，不与标准词汇冲突；
+- schema 变更走 buf 版本化，wire 兼容靠握手协商，不靠猜。
+
+### 生命周期
+
+子进程随宿主 UI 生死（初期）。后续可加守护进程模式（UI 重启不丢会话、多 UI 接同一内核），
+届时 stdio 由守护进程接管或换 Unix 套接字——协议不变。
+
+---
+
+## 4. Agent 运行时（core/runtime）
+
+- **并发模型**：每会话一个 goroutine 串行执行 turn，多会话天然并发。不做全局调度器——
+  可推理、可复现比吞吐重要。
+- **turn 管线**（薄，不做中间件框架）：
+
+  ```
+  输入 → 少量固定步骤(AgentsMd 注入 / 上下文预算) → model adapter
+       → 事件流出 → 工具调用(权限检查 → 沙箱 → 执行) → 回填模型 → 循环
+  ```
+
+- **工具系统**：fail-closed 能力声明（不声明 ReadOnly 视为写、不声明 ConcurrencySafe 视为
+  不可并发、不声明 MaxResultChars 视为不落盘）。内置工具与插件注册工具进同一注册表，
+  权限系统一视同仁。
+- **权限流**：`Mode`（auto / ask / deny）+ `AllowSet` + `AskResolver`；ask 经三个通道任意一个
+  问到用户，答案回填。**授权天花板在 agent 侧**（§8 S1）。
+- **model adapter 窄接口**（变化边界）：
+
+  ```go
+  type ModelClient interface {
+      Stream(ctx context.Context, req *contract.StreamInput) (<-chan contract.Event, error)
+      Name() string
+  }
+  ```
+
+  provider SDK 类型不得越过 adapters/ 边界。
+
+---
+
+## 5. Lua 插件（core/plugins）
+
+lunar 是**纯 Go Lua 5.1 虚拟机**（非插件框架）；插件宿主自建，VM 可替换。
+
+### 插件形态
+
+```
+my-plugin/
+  plugin.toml        # name / version / permissions / entry / hooks
+  main.lua           # 入口
+```
+
+宿主暴露（按 manifest permissions 收窄）：`agent.register_tool` / `agent.on(hook, fn)` /
+`agent.register_command` / `agent.log` / `agent.config.get` 等。钩子：session_start / message /
+tool_call / tool_result / session_end。
+
+### 沙箱与生命周期
+
+- 默认只给 `CoreLibraries()`（不能碰 io/os/文件系统）；文件访问走宿主按 permissions 放行的 API。
+- 每插件独立 lunar State（单 goroutine 约束），调用串行化，每次带 context 超时；
+  `os.exit` 变 ExitRequest，杀不死内核。
+- 插件宿主是 kernel 组件：启动加载、停止逆序关闭全部 State；热重载 = 关旧 State 起新 State。
+- VM 窄接口（`DoString / NewFunction / SetGlobal / Close`）隔离在 `core/plugins/luavm/`；
+  lunar 锁 commit（无 release、API 仍在稳定），不行就换 gopher-lua，只动一个包。
+- 已知限制：lunar 无指令级预算（防死循环靠 context 取消 + 调用超时）。
+
+---
+
+## 6. 配置管理（不用 sqlite）
+
+### 分层合并（低 → 高）
+
+```
+内置 defaults → ~/.creator/config.toml（全局）→ <项目>/.creator/config.toml
+              → 环境变量 CREATOR_AGENT_* → 运行时 API 覆盖
+```
+
+- **TOML** 格式 + 类型化结构 + 校验（报错指明哪层哪个键为什么错）。
+- **`configVersion` + 迁移函数链**：旧配置自动逐版本升级。
+- **秘密分离**：主配置只写引用（`apiKeyEnv = "ANTHROPIC_API_KEY"`），密钥在环境变量或
+  `credentials.toml`（0600，不进 git）。**模板 / 文档 / 测试永不出现真密钥**。
+- **单一写者**：只有内核写配置（原子写：临时文件 + rename）；三个通道的"改配置"都调同一方法。
+- **profile**：命名的模型+参数预设，切换只改一个键。
+- 会话数据：每会话一目录（`messages.jsonl` 追加 + `meta.json`），抗崩溃、可 diff、可抢救。
+
+---
+
+## 7. 生命周期（kernel 保留）
+
+内核由 kernel 组件拼装，拿到"注册 / 依赖序启动 / 逆序销毁 / 启动失败回滚 / 优雅退出"：
+
+```
+config → session store → plugin host → adapters → runtime → 通道(grpc / stdio)
+```
+
+信号（SIGINT/SIGTERM）只做 `app.Shutdown()` → 逆序销毁。kernel 七条不变量（G1–G7）不变，
+见 `kernel/doc.go`。
+
+---
+
+## 8. 安全设计
+
+### 不变量
+
+- **S1 授权天花板在 agent 侧**：客户端（桌面/编辑器/web）的"允许"只能在 agent 侧策略以内生效；
+  `deny` / 沙箱 / 写隔离由 agent 侧强制，**客户端批准永远越不过 deny 规则**。
+- **S2 展示与执行分离**：工具展示名、diff 渲染都是"给人看的"，不授予任何权限；真实能力以
+  注册表声明为准（fail-closed）。
+- **S3 提示词注入防线** = S1 + S2 + 审计日志；仓库内容永远视为不可信输入。
+
+### 网络面（gRPC）三道闸
+
+| 闸 | 手段 | 要点 |
+|---|---|---|
+| **1 不暴露** | 默认绑 `127.0.0.1`；远程优先隧道（SSH / Tailscale / WireGuard）；本机可选 Unix 套接字（0600） | 外部包到不了，最有效 |
+| **2 验身份** | 首启生成 256-bit token（0600）；gRPC 拦截器验 `Bearer`；常数时间比较；可轮换 | **unary + stream 双拦截器必须都挂**（只挂一个 = 流式裸奔） |
+| **3 限权限与加固** | 方法级授权；**关闭服务反射**；消息大小上限；并发流上限；长流最大时长；限速；审计日志 | 反射关闭防接口清单外泄 |
+
+### h2c（免证书）残余风险与档位
+
+明文信道：token 可被同网段嗅探重放；无服务端身份可被冒充。
+
+| 档位 | 场景 | 风险 | 措施 |
+|---|---|---|---|
+| 回环（默认） | 本机 | ≈ 零（流量不出机器） | 闸 2/3 即够 |
+| 内网 | 局域网 / 自用 | 同网段嗅探 | 隧道优先；直连则知悉风险 |
+| 公网 | 互联网 | 真实 | **必须 TLS（或 mTLS）** + 全闸（口子留在 auth/，届时启用） |
+
+---
+
+## 9. 技术选型与风险
+
+| 选型 | 成色 | 结论 |
+|---|---|---|
+| **grpc-go** | gRPC 官方 Go 实现，Google 维护，成熟 | **采用**（网络面）；鉴权/限流自建拦截器（官方明确只给管道不给策略） |
+| **buf + protoc-gen-go** | proto 工具链标准 | **采用**（契约单一事实来源） |
+| **lunar** | 49★ 纯 Go Lua 5.1 VM，MIT，API 仍在稳定 | **采用**：锁 commit + VM 窄接口隔离 |
+| **kernel/** | 自研，22 测试 + 七不变量 | **保留**（生命周期地基） |
+| Hertz | 7.4k★ HTTP 框架 | **不引入**：gRPC 场景用 grpc-go 自己的 HTTP/2 栈；HTTP 框架没有出场位 |
+| ACP | 4.3k★，JetBrains/Zed 等接入 | **评估后不用**：标准功能面固定、演进不可控；自研协议换完全控制权，生态自攒 |
+| HTTP/3 / quic-go | — | **搁置**：gRPC 主场是 HTTP/2；未来有需求再议 |
+| 配置 / 会话 | 自研分层 TOML + JSONL | 不引 viper / sqlite / ORM |
+
+已知限制：① lunar 无指令预算（超时兜底）；② h2c 明文残余风险见 §8 档位；③ 浏览器 webui 要接
+gRPC 需 grpc-web/Connect 桥——等 webui 立项再定；④ proto 工具链进构建流程（CI 加 buf lint）。
+
+---
+
+## 10. 改动清单（相对现状）
+
+### 保留（资产）
+
+| 项 | 处置 |
+|---|---|
+| `kernel/` | **原样保留**，当内核骨架 |
+| `cmd/creator-agent/tui/`（19.5k 行 + 30+ 测试） | **保留为产品交互前端**：注入的 `contract.Agent` 换本地直调实现（进程内 channel）；桌面场景走 stdio 协议 |
+| `cmd/creator-agent/diag/` | 保留给 CLI/TUI；内核侧用 `log/slog` |
+| `docs/tui.md` | 保留（渲染不变量对保留代码继续有效） |
+| 测试三层纪律（mock 单测 / 集成 opt-in / 沙箱冒烟） | 保留，适用于新模块 |
+| 密钥只进环境变量/本地文件 | **保留**（安全底线，见 §6） |
+
+### 新增
+
+`server/`（grpc + rpc + auth + limits）、`core/`（runtime + session + tools + perms + config + plugins）、
+`adapters/`、一体入口 `cmd/creator-agent`（子命令：默认交互 / `serve` / `rpc`）、contract 的 proto 定义与生成流程。
+
+### 重写
+
+README / CONTRIBUTING / docs（按新定位）、CI（buf lint + 生成检查 + 真二进制构建 + 多 OS `-race`）、
+Makefile（build 出真东西 + proto 生成 target）。
+
+### 清理
+
+根目录旧二进制构建产物、空 `logs/` 目录。CI 已下线的 sandbox-smoke 恢复时机挂到 core/tools 重建后。
+
+---
+
+## 11. 实施阶段
+
+| 阶段 | 内容 | 验收标准 |
+|---|---|---|
+| **P0 骨架** | kernel 装配 + config 分层 + core 服务方法面 + 一体入口直调 + gRPC 最小服务 + token 双拦截器 | 本机一条命令直调跑通（零网络）；`serve` 后 gRPC 健康检查通、无 token 被拒 |
+| **P1 会话与流式** | session JSONL + 事件流（channel / gRPC stream）+ proto 契约落线 + mock 模型 | TUI 经直调通道真终端跑起来（假模型回显）；流式事件两端一致 |
+| **P2 真运行时** | agent loop + 工具系统 + 权限流（天花板）+ 第一家 adapter | 真实模型对话 + 工具调用 + 授权流走通；deny 不可被客户端越过（S1 用例） |
+| **P3 插件** | lunar 宿主 + manifest + 工具注册 + 钩子 + 热重载 | 一个 Lua 插件注册的工具被 agent 真实调用 |
+| **P4 桌面通道** | `rpc` 子命令 + 自研协议 v1（schema 发布） | 模拟桌面宿主拉起子进程全会话走通（建会话/流式/授权/打断/恢复） |
+| **P5 网络硬化** | 三道闸全量落地 + 隧道接入文档 + TLS 可选件（口子） | §8 三道闸逐项验收；反射关闭、限额生效、审计可查 |
+
+每阶段结束跑全量门禁（`gofmt -s` / `go vet` / `go build` / `go test -race`，多 OS + buf lint），
+功能与设计各复核一轮再进下一阶段。
