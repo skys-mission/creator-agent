@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 func newAppWithMode(t *testing.T, initial string) *App {
 	t.Helper()
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.modeCtl = middlewares.NewModeController(middlewares.Mode(initial))
-	a.rt.currentMode = string(middlewares.NormalizeMode(middlewares.Mode(initial)))
+	a.rt.modeCtl = contract.NewModeController(contract.Mode(initial))
+	a.rt.currentMode = string(contract.NormalizeMode(contract.Mode(initial)))
 	return a
 }
 
@@ -55,7 +55,7 @@ func TestModeCommandWithArgSwitches(t *testing.T) {
 	if a.rt.currentMode != "auto" {
 		t.Errorf("currentMode = %q, want auto", a.rt.currentMode)
 	}
-	if a.rt.modeCtl.Get() != middlewares.ModeAuto {
+	if a.rt.modeCtl.Get() != contract.ModeAuto {
 		t.Errorf("controller = %q, want auto", a.rt.modeCtl.Get())
 	}
 }
@@ -90,7 +90,7 @@ func TestModePickerCommitSwitches(t *testing.T) {
 	if a.rt.currentMode != "trust" {
 		t.Errorf("commit: currentMode = %q, want trust", a.rt.currentMode)
 	}
-	if a.rt.modeCtl.Get() != middlewares.ModeTrust {
+	if a.rt.modeCtl.Get() != contract.ModeTrust {
 		t.Errorf("commit: controller = %q, want trust", a.rt.modeCtl.Get())
 	}
 	if a.modePicker.open {
@@ -143,7 +143,7 @@ func TestCyclePermissionModeOrder(t *testing.T) {
 		if a.rt.currentMode != w {
 			t.Errorf("after cycle: currentMode = %q, want %q", a.rt.currentMode, w)
 		}
-		if a.rt.modeCtl.Get() != middlewares.Mode(w) {
+		if a.rt.modeCtl.Get() != contract.Mode(w) {
 			t.Errorf("after cycle: controller = %q, want %q (out of sync with display)", a.rt.modeCtl.Get(), w)
 		}
 	}

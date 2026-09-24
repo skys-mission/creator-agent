@@ -7,10 +7,7 @@ import (
 
 	"github.com/clipperhouse/uax29/v2/graphemes"
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
-	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/builtins"
-	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 type status int
@@ -185,7 +182,7 @@ type AgentSpec struct {
 	ReadOnly    bool // read-only agents (e.g. plan) get a badge in the picker
 }
 
-// homeSessionEntry is one recent-session row on the home screen. Built from core.SessionInfo; the
+// homeSessionEntry is one recent-session row on the home screen. Built from contract.SessionInfo; the
 // digit-key quick-switch handler reads the ID to switch sessions.
 type homeSessionEntry struct {
 	ID    string
@@ -195,7 +192,7 @@ type homeSessionEntry struct {
 // Compactor manually compresses a session's stored history into a summary + recent tail (backing
 // the /compact command). It returns the new message list (which the caller displays) and persists
 // it. nil = manual compaction unavailable.
-type Compactor func(ctx context.Context, sessionID string) ([]core.Message, error)
+type Compactor func(ctx context.Context, sessionID string) ([]contract.Message, error)
 
 type diffOverlayState struct {
 	open    bool
@@ -340,19 +337,19 @@ type App struct {
 
 // runtimeState holds injected dependencies and stable handles for the session lifetime.
 type runtimeState struct {
-	ag        core.Agent
+	ag        contract.Agent
 	ctx       context.Context
 	cancel    context.CancelFunc
 	prof      profile
 	approver  *asyncApprover
-	rebuild   func(profileName string) (config.Profile, error)
-	toolInfos []core.ToolInfo
+	rebuild   func(profileName string) (contract.Profile, error)
+	toolInfos []contract.ToolInfo
 	md        *markdownCache
 
 	// nil-safe: callers guard on nil before Load/List/Save.
-	store        core.SessionStore
+	store        contract.SessionStore
 	sessionID    string
-	profiles     map[string]config.Profile
+	profiles     map[string]contract.Profile
 	mcpManager   MCPManager
 	rebuildTools func() error
 
@@ -361,16 +358,16 @@ type runtimeState struct {
 	// unavailable. The factory enqueues a switchAgentMsg to apply the swap on the event loop.
 	agentSwitch func(name string) error
 
-	variants       map[string]config.Variant
+	variants       map[string]contract.Variant
 	currentVariant string
 	variantSwitch  func(name string) error
 
 	// modeCtl is the shared permission-mode controller (default/trust/auto/readonly); nil = legacy path.
-	modeCtl     *middlewares.ModeController
+	modeCtl     *contract.ModeController
 	currentMode string // display cache of modeCtl's current mode (event-loop only, lock-free read)
 
 	// sandboxCtl is the shared sandbox override controller (/sandbox); nil = command disabled.
-	sandboxCtl *builtins.SandboxController
+	sandboxCtl *contract.SandboxController
 
 	titleGen TitleGenerator
 

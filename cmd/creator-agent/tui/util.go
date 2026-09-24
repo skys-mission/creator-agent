@@ -11,14 +11,12 @@ import (
 	"time"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
-	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/paths"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
-func hostOf(baseURL string) string { return config.HostOf(baseURL) }
+func hostOf(baseURL string) string { return contract.HostOf(baseURL) }
 
-func coreUserHint(err error) string { return core.UserHint(err) }
+func coreUserHint(err error) string { return contract.UserHint(err) }
 
 func durationStr(d time.Duration) string {
 	if d <= 0 {
@@ -271,7 +269,7 @@ func maybeTriggerTitleGeneration(a *App) {
 	if err != nil {
 		return
 	}
-	if !core.IsDefaultSessionTitle(title) && title != "" {
+	if !contract.IsDefaultSessionTitle(title) && title != "" {
 		return
 	}
 	msgs, err := a.rt.store.Load(sessionID)
@@ -283,7 +281,7 @@ func maybeTriggerTitleGeneration(a *App) {
 	var firstUser string
 	userCount := 0
 	for _, m := range msgs {
-		if m.Role != core.RoleUser {
+		if m.Role != contract.RoleUser {
 			continue
 		}
 		if strings.TrimSpace(m.Content) == "" {
@@ -326,7 +324,7 @@ func applyTitle(a *App, msg titleGeneratedMsg) {
 	if err != nil {
 		return
 	}
-	if curTitle != "" && !core.IsDefaultSessionTitle(curTitle) {
+	if curTitle != "" && !contract.IsDefaultSessionTitle(curTitle) {
 		return
 	}
 	msgs, err := a.rt.store.Load(msg.sessionID)
@@ -386,7 +384,7 @@ func lastAssistantText(a *App) string {
 // saveLastReply writes the last assistant reply to ~/.creator/last-reply.md and returns the
 // path. This is the /copy fallback for terminals where mouse selection is impractical.
 func saveLastReply(text string) (string, error) {
-	path, err := paths.LastReplyFile()
+	path, err := contract.LastReplyFile()
 	if err != nil {
 		return "", err
 	}

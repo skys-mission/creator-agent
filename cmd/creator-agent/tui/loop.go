@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/diag"
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 type (
 	eventMsg struct {
-		ev  core.Event
+		ev  contract.Event
 		gen uint64
 	}
 	streamEndMsg struct{ gen uint64 }
@@ -245,7 +245,7 @@ func handleEvent(a *App, msg any) {
 // interrupted (Esc/Ctrl+C) without tearing down the app. The cancel is published to a.streamCancel
 // and the turn is tagged with a fresh streamGen; events carry that gen so a cancelled/superseded
 // stream's late events are dropped by the event loop. Runs on the event-loop goroutine.
-func startStream(a *App, in core.StreamInput) {
+func startStream(a *App, in contract.StreamInput) {
 	diag.Trace("stream.start")
 	a.streamGen++
 	gen := a.streamGen

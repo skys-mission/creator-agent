@@ -443,7 +443,8 @@ func cycleTheme() string {
 func pal() *palette { return palettePtr.Load() }
 
 // ApplyTheme is the exported entry point for setting the active theme by name. Intended for startup
-// wiring (main.go reads config.Appearance). Returns the normalized name applied.
+// wiring (the caller passes the user's normalized appearance setting). Returns the normalized name
+// applied.
 func ApplyTheme(name string) string { return applyTheme(name) }
 
 // CurrentTheme is the exported entry point for reading the active theme name.

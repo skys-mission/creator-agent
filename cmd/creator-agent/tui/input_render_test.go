@@ -7,7 +7,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithSim builds an App backed by a self-built Screen writing to a throwaway buffer (no real
@@ -257,4 +257,4 @@ func containsSubstring(haystack, needle string) bool {
 
 // Compile-time guard: core import is used for the stream type only in helpers above (kept for
 // future extension); ensure the test compiles cleanly.
-var _ = core.UserMessage
+var _ = contract.UserMessage

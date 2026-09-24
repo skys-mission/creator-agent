@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/skys-mission/creator-agent/config"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithVariants builds a sim App wired with variants + a switch recorder.
-func newAppWithVariants(t *testing.T, variants map[string]config.Variant, current string) (*App, *[]string) {
+func newAppWithVariants(t *testing.T, variants map[string]contract.Variant, current string) (*App, *[]string) {
 	t.Helper()
 	a, _ := newAppWithSim(t, 80, 24)
 	a.rt.variants = variants
@@ -24,7 +24,7 @@ func newAppWithVariants(t *testing.T, variants map[string]config.Variant, curren
 
 // TestVariantPickerOpenFromConfig verifies /variants lists Default + each configured variant.
 func TestVariantPickerOpenFromConfig(t *testing.T) {
-	variants := map[string]config.Variant{
+	variants := map[string]contract.Variant{
 		"fast": {Temperature: pFloat64(0.2)},
 		"long": {MaxTokens: pInt(4096)},
 	}
@@ -63,7 +63,7 @@ func TestVariantPickerNoVariantsReportsUnconfigured(t *testing.T) {
 
 // TestVariantPickerCommitSwitches verifies selecting a configured variant switches via the factory.
 func TestVariantPickerCommitSwitches(t *testing.T) {
-	variants := map[string]config.Variant{
+	variants := map[string]contract.Variant{
 		"fast": {Temperature: pFloat64(0.2)},
 	}
 	a, calls := newAppWithVariants(t, variants, "")
@@ -88,7 +88,7 @@ func TestVariantPickerCommitSwitches(t *testing.T) {
 // TestVariantPickerCommitDefaultClears verifies selecting the Default row clears the variant
 // (switch factory called with "").
 func TestVariantPickerCommitDefaultClears(t *testing.T) {
-	variants := map[string]config.Variant{
+	variants := map[string]contract.Variant{
 		"fast": {Temperature: pFloat64(0.2)},
 	}
 	a, calls := newAppWithVariants(t, variants, "fast")
@@ -112,7 +112,7 @@ func TestVariantPickerCommitDefaultClears(t *testing.T) {
 
 // TestVariantPickerEscClose verifies Esc dismisses without switching.
 func TestVariantPickerEscClose(t *testing.T) {
-	variants := map[string]config.Variant{"fast": {}}
+	variants := map[string]contract.Variant{"fast": {}}
 	a, calls := newAppWithVariants(t, variants, "")
 	openVariantPicker(a)
 	injectKey(a, KeyEsc)
@@ -127,7 +127,7 @@ func TestVariantPickerEscClose(t *testing.T) {
 // TestVariantPickerFilterKeepsDefault verifies filtering keeps the Default row so the user can
 // always reset, plus any matching configured variants.
 func TestVariantPickerFilterKeepsDefault(t *testing.T) {
-	variants := map[string]config.Variant{
+	variants := map[string]contract.Variant{
 		"fast": {Temperature: pFloat64(0.2)},
 		"long": {MaxTokens: pInt(4096)},
 	}

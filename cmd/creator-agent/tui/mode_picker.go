@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // --- permission mode picker (default / trust / auto / readonly) ---
@@ -39,7 +39,7 @@ func openModePicker(a *App) {
 	cur := currentModeNormalized(a)
 	p.selIdx = 0
 	for i, e := range p.entries {
-		if string(middlewares.NormalizeMode(middlewares.Mode(e.name))) == cur {
+		if string(contract.NormalizeMode(contract.Mode(e.name))) == cur {
 			p.selIdx = i
 			break
 		}
@@ -122,7 +122,7 @@ func (modeRenderer) drawItem(a *App, it modePickerItem, selected bool, innerX, r
 	}
 	drawTextRaw(a.screen, a, innerX, ry, 2, marker, nameStyle)
 	nameText := it.name
-	if string(middlewares.NormalizeMode(middlewares.Mode(it.name))) == currentModeNormalized(a) {
+	if string(contract.NormalizeMode(contract.Mode(it.name))) == currentModeNormalized(a) {
 		nameText = "• " + it.name
 	}
 	drawTextRaw(a.screen, a, innerX+2, ry, nameCol+2, truncateStr(nameText, nameCol+2), nameStyle)
@@ -152,12 +152,12 @@ func applyModeSwitch(a *App, name string) {
 		a.addSystem(i18n.T("mode.not_enabled_build"))
 		return
 	}
-	mode := string(middlewares.NormalizeMode(middlewares.Mode(name)))
+	mode := string(contract.NormalizeMode(contract.Mode(name)))
 	if a.rt.currentMode == mode {
 		a.addSystem(fmt.Sprintf(i18n.T("mode.already"), mode))
 		return
 	}
-	a.rt.modeCtl.Set(middlewares.Mode(mode))
+	a.rt.modeCtl.Set(contract.Mode(mode))
 	a.rt.currentMode = mode
 	a.forceRender = true
 	a.addSystem(fmt.Sprintf(i18n.T("mode.switched"), mode, modeSwitchHint(mode)))
@@ -168,19 +168,19 @@ func currentModeNormalized(a *App) string {
 	if m := a.rt.currentMode; m != "" {
 		return m
 	}
-	return string(middlewares.ModeDefault)
+	return string(contract.ModeDefault)
 }
 
 // modeSwitchHint returns a one-line behavior reminder shown after a mode switch.
 func modeSwitchHint(mode string) string {
-	switch middlewares.Mode(mode) {
-	case middlewares.ModeDefault:
+	switch contract.Mode(mode) {
+	case contract.ModeDefault:
 		return i18n.T("mode.hint.default")
-	case middlewares.ModeTrust:
+	case contract.ModeTrust:
 		return i18n.T("mode.hint.trust")
-	case middlewares.ModeAuto:
+	case contract.ModeAuto:
 		return i18n.T("mode.hint.auto")
-	case middlewares.ModeReadonly:
+	case contract.ModeReadonly:
 		return i18n.T("mode.hint.readonly")
 	}
 	return ""
@@ -189,12 +189,12 @@ func modeSwitchHint(mode string) string {
 // modeStyle returns a theme-aware style for the mode badge: auto = alert (red, bold),
 // trust = caution (warning), readonly = info, default = muted.
 func modeStyle(mode string) Style {
-	switch middlewares.Mode(mode) {
-	case middlewares.ModeAuto:
+	switch contract.Mode(mode) {
+	case contract.ModeAuto:
 		return styleError()
-	case middlewares.ModeTrust:
+	case contract.ModeTrust:
 		return styleWarning()
-	case middlewares.ModeReadonly:
+	case contract.ModeReadonly:
 		return styleInfo()
 	default:
 		return styleTextMuted()
@@ -209,8 +209,8 @@ func cyclePermissionMode(a *App) {
 	if a.rt.modeCtl == nil {
 		return
 	}
-	order := []middlewares.Mode{middlewares.ModeDefault, middlewares.ModeTrust, middlewares.ModeAuto, middlewares.ModeReadonly}
-	cur := middlewares.NormalizeMode(middlewares.Mode(currentModeNormalized(a)))
+	order := []contract.Mode{contract.ModeDefault, contract.ModeTrust, contract.ModeAuto, contract.ModeReadonly}
+	cur := contract.NormalizeMode(contract.Mode(currentModeNormalized(a)))
 	next := order[0]
 	for i, m := range order {
 		if m == cur {

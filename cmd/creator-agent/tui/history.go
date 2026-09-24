@@ -5,12 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/paths"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 func historyPath() (string, bool) {
-	p, err := paths.HistoryFile()
+	p, err := contract.HistoryFile()
 	if err != nil {
 		return "", false
 	}
@@ -41,16 +40,16 @@ func saveHistory(h []string) {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		core.Warnf("save TUI history: mkdir: %v", err)
+		contract.Warnf("save TUI history: mkdir: %v", err)
 		return
 	}
 	data, err := json.Marshal(h)
 	if err != nil {
-		core.Warnf("save TUI history: marshal: %v", err)
+		contract.Warnf("save TUI history: marshal: %v", err)
 		return
 	}
 	if err := os.WriteFile(p, data, 0o600); err != nil {
-		core.Warnf("save TUI history: write: %v", err)
+		contract.Warnf("save TUI history: write: %v", err)
 	}
 }
 

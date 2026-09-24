@@ -7,7 +7,7 @@ import (
 
 	"github.com/clipperhouse/uax29/v2/graphemes"
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -441,7 +441,7 @@ func renderHomeLines(a *App, width int) []styledLine {
 	return out
 }
 
-func homeRecentInfos(a *App) []core.SessionInfo {
+func homeRecentInfos(a *App) []contract.SessionInfo {
 	if a.rt.store == nil {
 		return nil
 	}
@@ -449,7 +449,7 @@ func homeRecentInfos(a *App) []core.SessionInfo {
 	if err != nil {
 		return nil
 	}
-	out := make([]core.SessionInfo, 0, mini(len(infos), 9))
+	out := make([]contract.SessionInfo, 0, mini(len(infos), 9))
 	for _, info := range infos {
 		if info.ID == a.rt.sessionID {
 			continue
@@ -477,7 +477,7 @@ func resolveHomeSessions(a *App) []homeSessionEntry {
 }
 
 func homeTitleOrFallback(title string) string {
-	if title == "" || core.IsDefaultSessionTitle(title) {
+	if title == "" || contract.IsDefaultSessionTitle(title) {
 		return i18n.T("home.untitled")
 	}
 	return title

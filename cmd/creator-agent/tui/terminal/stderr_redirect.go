@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/skys-mission/creator-agent/paths"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 const stderrLogName = "tui-stderr.log"
 
 func RedirectStderrToFile() string {
-	dir, err := paths.LogDir()
+	dir, err := contract.LogDir()
 	if err != nil {
 		return ""
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // fakeTitleGenerator is a controllable TitleGenerator that records its input and returns a preset
@@ -44,12 +44,12 @@ func (f *fakeTitleGenerator) callCount() int {
 
 // newAppWithTitle builds a sim App wired with a MemoryStore seeded with a session (default title)
 // holding the given messages, plus a fake title generator.
-func newAppWithTitle(t *testing.T, sessionID string, msgs []core.Message) (*App, *fakeTitleGenerator) {
+func newAppWithTitle(t *testing.T, sessionID string, msgs []contract.Message) (*App, *fakeTitleGenerator) {
 	t.Helper()
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore()
+	a.rt.store = contract.NewMemoryStore()
 	a.rt.sessionID = sessionID
-	if err := a.rt.store.SaveWithMeta(sessionID, core.DefaultSessionTitle(time.Now()), msgs); err != nil {
+	if err := a.rt.store.SaveWithMeta(sessionID, contract.DefaultSessionTitle(time.Now()), msgs); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 	// Provide a sender that enqueues into events (the real run.go wires this).
@@ -68,7 +68,7 @@ func newAppWithTitle(t *testing.T, sessionID string, msgs []core.Message) (*App,
 // TestMaybeTriggerDefaultTitleGenerates verifies a session with the default title + one user message
 // triggers exactly one generation with that message as input.
 func TestMaybeTriggerDefaultTitleGenerates(t *testing.T) {
-	msgs := []core.Message{core.UserMessage("Help me debug the config loader")}
+	msgs := []contract.Message{contract.UserMessage("Help me debug the config loader")}
 	a, gen := newAppWithTitle(t, "ses_a", msgs)
 	gen.release = make(chan struct{}) // hold the goroutine so we can observe the call
 	maybeTriggerTitleGeneration(a)
@@ -92,10 +92,10 @@ func TestMaybeTriggerDefaultTitleGenerates(t *testing.T) {
 // TestMaybeTriggerSkipsWhenTitleAlreadySet verifies a non-default title skips generation.
 func TestMaybeTriggerSkipsWhenTitleAlreadySet(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore()
+	a.rt.store = contract.NewMemoryStore()
 	a.rt.sessionID = "ses_a"
 	a.rt.ctx = context.Background()
-	msgs := []core.Message{core.UserMessage("hi")}
+	msgs := []contract.Message{contract.UserMessage("hi")}
 	if err := a.rt.store.SaveWithMeta("ses_a", "A custom title", msgs); err != nil {
 		t.Fatal(err)
 	}
@@ -111,12 +111,12 @@ func TestMaybeTriggerSkipsWhenTitleAlreadySet(t *testing.T) {
 // TestMaybeTriggerSkipsWhenNoTitleGen verifies no generator injected -> no crash, no work.
 func TestMaybeTriggerSkipsWhenNoTitleGen(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore()
+	a.rt.store = contract.NewMemoryStore()
 	a.rt.sessionID = "ses_a"
 	a.rt.ctx = context.Background()
 	a.rt.titleGen = nil // none injected
 	a.rt.sender = func(any) {}
-	if err := a.rt.store.SaveWithMeta("ses_a", core.DefaultSessionTitle(time.Now()), []core.Message{core.UserMessage("hi")}); err != nil {
+	if err := a.rt.store.SaveWithMeta("ses_a", contract.DefaultSessionTitle(time.Now()), []contract.Message{contract.UserMessage("hi")}); err != nil {
 		t.Fatal(err)
 	}
 	maybeTriggerTitleGeneration(a) // must not panic
@@ -124,10 +124,10 @@ func TestMaybeTriggerSkipsWhenNoTitleGen(t *testing.T) {
 
 // TestMaybeTriggerSkipsWhenMultipleUserMessages verifies the "exactly one user message" gate.
 func TestMaybeTriggerSkipsWhenMultipleUserMessages(t *testing.T) {
-	msgs := []core.Message{
-		core.UserMessage("first"),
-		core.AssistantMessage("reply"),
-		core.UserMessage("second"),
+	msgs := []contract.Message{
+		contract.UserMessage("first"),
+		contract.AssistantMessage("reply"),
+		contract.UserMessage("second"),
 	}
 	a, gen := newAppWithTitle(t, "ses_a", msgs)
 	maybeTriggerTitleGeneration(a)
@@ -141,7 +141,7 @@ func TestMaybeTriggerSkipsWhenMultipleUserMessages(t *testing.T) {
 // TestApplyTitlePersistsAndMatchesSession verifies applyTitle writes the title via SaveWithMeta for
 // the matching session and forces a repaint.
 func TestApplyTitlePersistsAndMatchesSession(t *testing.T) {
-	a, _ := newAppWithTitle(t, "ses_a", []core.Message{core.UserMessage("hi")})
+	a, _ := newAppWithTitle(t, "ses_a", []contract.Message{contract.UserMessage("hi")})
 	applyTitle(a, titleGeneratedMsg{sessionID: "ses_a", title: "Greeting"})
 	title, _, _, err := loadMetaBestEffort(a.rt.store, "ses_a")
 	if err != nil {
@@ -158,9 +158,9 @@ func TestApplyTitlePersistsAndMatchesSession(t *testing.T) {
 // TestApplyTitleIgnoresDifferentSession verifies a title for a non-active session is still
 // persisted (so the title survives) but only when its title is still default.
 func TestApplyTitleIgnoresDifferentSession(t *testing.T) {
-	a, _ := newAppWithTitle(t, "ses_active", []core.Message{core.UserMessage("hi")})
+	a, _ := newAppWithTitle(t, "ses_active", []contract.Message{contract.UserMessage("hi")})
 	// Seed another session that still has a default title.
-	if err := a.rt.store.SaveWithMeta("ses_other", core.DefaultSessionTitle(time.Now()), []core.Message{core.UserMessage("hello")}); err != nil {
+	if err := a.rt.store.SaveWithMeta("ses_other", contract.DefaultSessionTitle(time.Now()), []contract.Message{contract.UserMessage("hello")}); err != nil {
 		t.Fatal(err)
 	}
 	applyTitle(a, titleGeneratedMsg{sessionID: "ses_other", title: "Other title"})
@@ -173,8 +173,8 @@ func TestApplyTitleIgnoresDifferentSession(t *testing.T) {
 // TestApplyTitleSkipsNonDefaultCurrent verifies applyTitle does not overwrite an already-custom title.
 func TestApplyTitleSkipsNonDefaultCurrent(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore()
-	if err := a.rt.store.SaveWithMeta("ses_a", "Pre-existing custom", []core.Message{core.UserMessage("hi")}); err != nil {
+	a.rt.store = contract.NewMemoryStore()
+	if err := a.rt.store.SaveWithMeta("ses_a", "Pre-existing custom", []contract.Message{contract.UserMessage("hi")}); err != nil {
 		t.Fatal(err)
 	}
 	applyTitle(a, titleGeneratedMsg{sessionID: "ses_a", title: "Should not overwrite"})
@@ -209,7 +209,7 @@ func TestCleanTitle(t *testing.T) {
 // TestMaybeTriggerEnqueuesResult verifies the generated title flows through sender as a
 // titleGeneratedMsg, then applyTitle persists it end-to-end.
 func TestMaybeTriggerEnqueuesResult(t *testing.T) {
-	msgs := []core.Message{core.UserMessage("Fix the grep tool timeout")}
+	msgs := []contract.Message{contract.UserMessage("Fix the grep tool timeout")}
 	a, gen := newAppWithTitle(t, "ses_a", msgs)
 	gen.result = "Grep timeout fix"
 	maybeTriggerTitleGeneration(a)

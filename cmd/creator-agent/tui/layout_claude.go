@@ -97,7 +97,7 @@ func userBlockLinesClaude(content string, width int) []styledLine {
 	if contentW < 4 {
 		contentW = 4
 	}
-	out := []styledLine{styledLine{}} // top spacer
+	out := []styledLine{{}} // top spacer
 	for _, ln := range wrapPlain(content, contentW) {
 		out = append(out, lineFromRaw(ln, styleUser()))
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 type askMsg struct {
@@ -15,12 +15,12 @@ type askMsg struct {
 
 type asyncApprover struct {
 	mu       sync.RWMutex
-	sender   func(msg any)         // pushes a message into the App event queue; nil before SetSender
-	allowSet *middlewares.AllowSet // session-level approved invocations (shared type with the REPL approver)
+	sender   func(msg any)      // pushes a message into the App event queue; nil before SetSender
+	allowSet *contract.AllowSet // session-level approved invocations (shared type with the REPL approver)
 }
 
 func newAsyncApprover() *asyncApprover {
-	return &asyncApprover{allowSet: middlewares.NewAllowSet()}
+	return &asyncApprover{allowSet: contract.NewAllowSet()}
 }
 
 // SetSender injects the event-queue sender after assembly (the approver is built before the App).
@@ -65,4 +65,4 @@ func (a *asyncApprover) rememberAllEdits() {
 	a.allowSet.RememberWriteEdit()
 }
 
-var _ middlewares.AskResolver = (*asyncApprover)(nil).approve
+var _ contract.AskResolver = (*asyncApprover)(nil).approve

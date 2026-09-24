@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/skys-mission/creator-agent/paths"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 const (
@@ -52,7 +52,7 @@ func Setup() {
 	if traceFile != nil {
 		return // already set up
 	}
-	dir, err := paths.LogDir()
+	dir, err := contract.LogDir()
 	if err != nil {
 		return
 	}

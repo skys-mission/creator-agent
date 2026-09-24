@@ -1,12 +1,8 @@
-.PHONY: build run test test-cover bench vet fmt tidy install clean dev-sandbox dev-blank help
+.PHONY: build test test-fast test-cover bench vet fmt tidy clean help
 
-BINARY := creator-agent
-
-build: ## 编译二进制到当前目录
-	go build -o $(BINARY) ./cmd/creator-agent
-
-run: build ## 编译并进入交互模式
-	./$(BINARY)
+# 当前没有 main 包（CLI 入口待重建），build 只做编译检查。
+build: ## 编译检查（暂无可执行入口）
+	go build ./...
 
 test: ## 跑全部测试（含 race 检测）
 	go test -race ./...
@@ -31,17 +27,11 @@ fmt: ## 格式化代码
 tidy: ## 整理依赖
 	go mod tidy
 
-install: ## 安装到 GOBIN
-	go install ./cmd/creator-agent
-
 clean: ## 清理构建产物
-	rm -f $(BINARY)
+	rm -f creator-agent creator-agent.race
 
-dev-sandbox: ## 一键隔离 dev/测试环境（自动编译 + 一次性沙箱 + 用完即焚；传 prompt: ARGS='-- "hi"')
-	@scripts/dev-sandbox.sh $(ARGS)
-
-dev-blank: ## 空配置隔离沙箱（测首次引导/setup wizard；不复制真实配置、不注入 key）
-	@CA_BLANK=1 scripts/dev-sandbox.sh $(ARGS)
+# scripts/dev-sandbox.sh（隔离沙箱，用完即焚）已保留，但它需要可执行入口；
+# CLI 重建后把 dev-sandbox / dev-blank 两个 target 加回来即可。
 
 help: ## 显示本帮助
 	@awk 'BEGIN {FS = ":.*##"; printf "用法:\n  make <target>\n\ntargets:\n"} /^[a-zA-Z_-]+.*:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)

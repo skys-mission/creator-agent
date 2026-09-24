@@ -13,10 +13,7 @@ import (
 	runewidth "github.com/mattn/go-runewidth"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
-	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/core/builtins"
-	"github.com/skys-mission/creator-agent/core/middlewares"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // ErrTerminalUnavailable indicates the interactive TUI could not initialize the terminal (raw mode /
@@ -29,29 +26,29 @@ var ErrTerminalUnavailable = errors.New("interactive terminal unavailable")
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	store               core.SessionStore
+	store               contract.SessionStore
 	initialSession      string
 	resumeOnStart       bool
-	profiles            map[string]config.Profile
+	profiles            map[string]contract.Profile
 	mcpManager          MCPManager
-	rebuildToolsFactory func(resolver middlewares.AskResolver) (core.Agent, error)
+	rebuildToolsFactory func(resolver contract.AskResolver) (contract.Agent, error)
 
 	agents             []AgentSpec
-	agentSwitchFactory func(resolver middlewares.AskResolver) func(string) (core.Agent, error)
+	agentSwitchFactory func(resolver contract.AskResolver) func(string) (contract.Agent, error)
 
-	variants             map[string]config.Variant
+	variants             map[string]contract.Variant
 	initialVariant       string
-	variantSwitchFactory func(resolver middlewares.AskResolver) func(string) (core.Agent, error)
+	variantSwitchFactory func(resolver contract.AskResolver) func(string) (contract.Agent, error)
 
 	// unavailable (the TUI skips it and keeps the default placeholder).
 	titleGen TitleGenerator
 
 	compactor Compactor
 
-	modeCtl     *middlewares.ModeController
+	modeCtl     *contract.ModeController
 	initialMode string
 
-	sandboxCtl *builtins.SandboxController
+	sandboxCtl *contract.SandboxController
 
 	language string
 }
@@ -60,7 +57,7 @@ type runConfig struct {
 // and the initial mode label, enabling /mode switching. The controller is shared with the permission
 // middleware, so a switch takes effect on the next tool call with no agent rebuild. nil leaves mode
 // features disabled (legacy path).
-func WithModeController(m *middlewares.ModeController, initial string) RunOption {
+func WithModeController(m *contract.ModeController, initial string) RunOption {
 	return func(rc *runConfig) {
 		rc.modeCtl = m
 		rc.initialMode = initial
@@ -70,13 +67,13 @@ func WithModeController(m *middlewares.ModeController, initial string) RunOption
 // WithSandboxController injects the shared sandbox override controller, enabling the /sandbox command
 // to toggle OS isolation for the running session. Shared with the bash tool's PolicySandbox, so a
 // toggle takes effect on the next command with no agent rebuild. nil disables the /sandbox command.
-func WithSandboxController(c *builtins.SandboxController) RunOption {
+func WithSandboxController(c *contract.SandboxController) RunOption {
 	return func(rc *runConfig) { rc.sandboxCtl = c }
 }
 
 // WithSessionStore injects the session store used for multi-session switching (/new, /sessions).
 // When omitted, a MemoryStore is used (sessions lost on restart).
-func WithSessionStore(s core.SessionStore) RunOption {
+func WithSessionStore(s contract.SessionStore) RunOption {
 	return func(c *runConfig) { c.store = s }
 }
 
@@ -105,7 +102,7 @@ func WithInitialSessionPickerIf(enable bool) RunOption {
 
 // WithProfiles injects the configured model profiles so the /models picker can list and switch
 // between them at runtime. When omitted, the picker reports no profiles configured.
-func WithProfiles(p map[string]config.Profile) RunOption {
+func WithProfiles(p map[string]contract.Profile) RunOption {
 	return func(c *runConfig) { c.profiles = p }
 }
 
@@ -118,7 +115,7 @@ func WithMCPManager(m MCPManager) RunOption {
 // WithRebuildToolsFactory injects a factory that rebuilds the agent against the current provider
 // with the latest tool set. Called after a /mcps toggle so the agent picks up the new enabled MCP
 // servers. run.go supplies the live approval resolver when invoking it.
-func WithRebuildToolsFactory(f func(resolver middlewares.AskResolver) (core.Agent, error)) RunOption {
+func WithRebuildToolsFactory(f func(resolver contract.AskResolver) (contract.Agent, error)) RunOption {
 	return func(c *runConfig) { c.rebuildToolsFactory = f }
 }
 
@@ -131,20 +128,20 @@ func WithAgents(a []AgentSpec) RunOption {
 // WithAgentSwitchFactory injects the factory backing /agents runtime switching. Given the live
 // resolver it returns a switch func that rebuilds the agent for a chosen agent name. When omitted,
 // runtime agent switching is unavailable (the picker reports it).
-func WithAgentSwitchFactory(f func(resolver middlewares.AskResolver) func(string) (core.Agent, error)) RunOption {
+func WithAgentSwitchFactory(f func(resolver contract.AskResolver) func(string) (contract.Agent, error)) RunOption {
 	return func(c *runConfig) { c.agentSwitchFactory = f }
 }
 
 // WithVariants injects the variant map for the current profile + the startup variant name, backing
 // the /variants picker. When the map is empty/omitted, /variants reports no variants configured.
-func WithVariants(v map[string]config.Variant, initialVariant string) RunOption {
+func WithVariants(v map[string]contract.Variant, initialVariant string) RunOption {
 	return func(c *runConfig) { c.variants = v; c.initialVariant = initialVariant }
 }
 
 // WithVariantSwitchFactory injects the factory backing /variants runtime switching. Given the live
 // resolver it returns a switch func that rebuilds the provider with a chosen variant's overrides
 // applied. When omitted, runtime variant switching is unavailable.
-func WithVariantSwitchFactory(f func(resolver middlewares.AskResolver) func(string) (core.Agent, error)) RunOption {
+func WithVariantSwitchFactory(f func(resolver contract.AskResolver) func(string) (contract.Agent, error)) RunOption {
 	return func(c *runConfig) { c.variantSwitchFactory = f }
 }
 
@@ -174,10 +171,10 @@ func WithLanguage(lang string) RunOption {
 // new profile config. When nil, /model switching is unavailable.
 func RunWithMiddleware(
 	ctx context.Context,
-	buildMW func(resolver middlewares.AskResolver) (core.Agent, context.CancelFunc, error),
-	rebuild func(resolver middlewares.AskResolver, profileName string) (core.Agent, config.Profile, error),
-	prof config.Profile,
-	toolInfos []core.ToolInfo,
+	buildMW func(resolver contract.AskResolver) (contract.Agent, context.CancelFunc, error),
+	rebuild func(resolver contract.AskResolver, profileName string) (contract.Agent, contract.Profile, error),
+	prof contract.Profile,
+	toolInfos []contract.ToolInfo,
 	profileName string,
 	opts ...RunOption,
 ) error {
@@ -194,12 +191,12 @@ func RunWithMiddleware(
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	rc := runConfig{initialSession: core.GenerateSessionID()}
+	rc := runConfig{initialSession: contract.GenerateSessionID()}
 	for _, opt := range opts {
 		opt(&rc)
 	}
 	if rc.store == nil {
-		rc.store = core.NewMemoryStore()
+		rc.store = contract.NewMemoryStore()
 	}
 	i18n.SetLang(i18n.ParseLang(rc.language))
 
@@ -221,7 +218,7 @@ func RunWithMiddleware(
 			variants:       rc.variants,
 			currentVariant: rc.initialVariant,
 			modeCtl:        rc.modeCtl,
-			currentMode:    string(middlewares.NormalizeMode(middlewares.Mode(rc.initialMode))),
+			currentMode:    string(contract.NormalizeMode(contract.Mode(rc.initialMode))),
 			sandboxCtl:     rc.sandboxCtl,
 			titleGen:       rc.titleGen,
 			compactor:      rc.compactor,
@@ -248,7 +245,7 @@ func RunWithMiddleware(
 	}
 	// synchronously. The rebuild/switch factories below run on the event-loop goroutine, so a plain
 	// blocking send to a full buffer would self-deadlock (the loop is waiting for the sender).
-	publishSwitchAgent := func(newAg core.Agent) {
+	publishSwitchAgent := func(newAg contract.Agent) {
 		select {
 		case a.events <- switchAgentMsg{ag: newAg}:
 		default:
@@ -258,10 +255,10 @@ func RunWithMiddleware(
 	}
 
 	if rebuild != nil {
-		a.rt.rebuild = func(profileName string) (config.Profile, error) {
+		a.rt.rebuild = func(profileName string) (contract.Profile, error) {
 			newAg, newProf, rerr := rebuild(ap.approve, profileName)
 			if rerr != nil {
-				return config.Profile{}, rerr
+				return contract.Profile{}, rerr
 			}
 			publishSwitchAgent(newAg)
 			return newProf, nil
@@ -399,4 +396,4 @@ func isCJKLocale() bool {
 	return false
 }
 
-type switchAgentMsg struct{ ag core.Agent }
+type switchAgentMsg struct{ ag contract.Agent }

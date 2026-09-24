@@ -12,9 +12,7 @@ import (
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/diag"
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
-	"github.com/skys-mission/creator-agent/core"
-	"github.com/skys-mission/creator-agent/paths"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 func submitInput(a *App) {
@@ -56,9 +54,9 @@ func submitInput(a *App) {
 	a.statusStarted = time.Now()
 	a.current = &msgBlock{kind: kindAssistant}
 	clearHomeTip(a)
-	startStream(a, core.StreamInput{
+	startStream(a, contract.StreamInput{
 		SessionID: a.rt.sessionID,
-		Messages:  []core.Message{core.UserMessage(resolved)},
+		Messages:  []contract.Message{contract.UserMessage(resolved)},
 	})
 }
 
@@ -301,7 +299,7 @@ func handleModelCommand(a *App, arg string) bool {
 			return true
 		}
 		a.addSystem(fmt.Sprintf(i18n.T("model.current"),
-			orDash(a.rt.prof.Name), a.rt.prof.Model, config.HostOf(a.rt.prof.BaseURL)))
+			orDash(a.rt.prof.Name), a.rt.prof.Model, contract.HostOf(a.rt.prof.BaseURL)))
 		return true
 	}
 	if err := applyProfileSwitch(a, arg); err != nil {
@@ -378,7 +376,7 @@ func handleRenameCommand(a *App, arg string) bool {
 		a.addSystem(i18n.T("rename.no_store"))
 		return true
 	}
-	mut, ok := a.rt.store.(core.SessionMetaMutator)
+	mut, ok := a.rt.store.(contract.SessionMetaMutator)
 	if !ok {
 		a.addSystem(i18n.T("rename.unsupported"))
 		return true
@@ -397,7 +395,7 @@ func handlePinCommand(a *App) bool {
 		a.addSystem(i18n.T("pin.no_store"))
 		return true
 	}
-	mut, ok := a.rt.store.(core.SessionMetaMutator)
+	mut, ok := a.rt.store.(contract.SessionMetaMutator)
 	if !ok {
 		a.addSystem(i18n.T("pin.unsupported"))
 		return true
@@ -502,23 +500,23 @@ func applyApprovalChoice(a *App) {
 	}
 }
 
-func handleCoreEvent(a *App, ev core.Event) {
+func handleCoreEvent(a *App, ev contract.Event) {
 	switch e := ev.(type) {
-	case core.TextEvent:
+	case contract.TextEvent:
 		if a.current == nil {
 			a.current = &msgBlock{kind: kindAssistant}
 		}
 		a.current.content.WriteString(e.Delta)
 		a.status = statusThinking
 		a.atBottom = true
-	case core.ThinkingEvent:
+	case contract.ThinkingEvent:
 		if a.current == nil {
 			a.current = &msgBlock{kind: kindAssistant}
 		}
 		a.current.thinking.WriteString(e.Delta)
 		a.status = statusThinking
 		a.atBottom = true
-	case core.ToolUseStartEvent:
+	case contract.ToolUseStartEvent:
 		if a.current == nil {
 			a.current = &msgBlock{kind: kindAssistant}
 		}
@@ -530,7 +528,7 @@ func handleCoreEvent(a *App, ev core.Event) {
 		a.status = statusRunningTool
 		a.statusStarted = time.Now()
 		diag.Trace("tool.start name=%s id=%s", e.Name, e.ID)
-	case core.ToolUseDeltaEvent:
+	case contract.ToolUseDeltaEvent:
 		if a.current != nil {
 			for i := len(a.current.tools) - 1; i >= 0; i-- {
 				if a.current.tools[i].id == e.ID && a.current.tools[i].status == toolRunning {
@@ -542,7 +540,7 @@ func handleCoreEvent(a *App, ev core.Event) {
 				a.current.toolCallArgs.WriteString(e.DeltaJSON)
 			}
 		}
-	case core.ToolResultEvent:
+	case contract.ToolResultEvent:
 		diag.Trace("tool.result id=%s err=%v", e.ID, e.Err != nil)
 		if a.current != nil {
 			for i := range a.current.tools {
@@ -564,16 +562,16 @@ func handleCoreEvent(a *App, ev core.Event) {
 				}
 			}
 		}
-	case core.UsageEvent:
+	case contract.UsageEvent:
 		a.usage = fmt.Sprintf("%d->%d", e.Usage.InputTokens, e.Usage.OutputTokens)
 		a.totalIn += e.Usage.InputTokens
 		a.totalOut += e.Usage.OutputTokens
 		a.lastInput = e.Usage.InputTokens
-	case core.FinishEvent:
-		if e.Reason == core.FinishStepLimit {
+	case contract.FinishEvent:
+		if e.Reason == contract.FinishStepLimit {
 			a.status = statusError
 		}
-	case core.ErrorEvent:
+	case contract.ErrorEvent:
 		diag.Trace("core.error: %v", e.Err)
 		a.err = e.Err
 		a.status = statusError
@@ -678,7 +676,7 @@ func newSession(a *App) {
 		a.addSystem(i18n.T("session.new_busy"))
 		return
 	}
-	a.rt.sessionID = core.GenerateSessionID()
+	a.rt.sessionID = contract.GenerateSessionID()
 	resetConversationView(a)
 	a.addSystem(fmt.Sprintf(i18n.T("session.new"),
 		shortID(a.rt.sessionID)))
@@ -722,21 +720,21 @@ func resetConversationView(a *App) {
 	clearHomeTip(a)
 }
 
-func rebuildMessagesFromCore(a *App, msgs []core.Message) []msgBlock {
+func rebuildMessagesFromCore(a *App, msgs []contract.Message) []msgBlock {
 	if len(msgs) == 0 {
 		return nil
 	}
 	out := make([]msgBlock, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
-		case core.RoleUser:
+		case contract.RoleUser:
 			if m.Content == "" {
 				continue
 			}
 			mb := msgBlock{kind: kindUser}
 			mb.content.WriteString(m.Content)
 			out = append(out, mb)
-		case core.RoleAssistant:
+		case contract.RoleAssistant:
 			if m.Content == "" && m.Reasoning == "" {
 				continue
 			}
@@ -764,20 +762,20 @@ func shortID(id string) string {
 
 func currentSessionTitle(a *App) string {
 	if a == nil || a.rt.store == nil {
-		return core.DefaultSessionTitle(time.Now())
+		return contract.DefaultSessionTitle(time.Now())
 	}
 	if title, _, _, err := loadMetaBestEffort(a.rt.store, a.rt.sessionID); err == nil && title != "" {
 		return title
 	}
 	// No persisted metadata yet (session has no saved turn): synthesize from the in-memory messages.
 	msgs, _ := a.rt.store.Load(a.rt.sessionID)
-	if title := core.DeriveTitle(msgs, time.Now()); title != "" && !core.IsDefaultSessionTitle(title) {
+	if title := contract.DeriveTitle(msgs, time.Now()); title != "" && !contract.IsDefaultSessionTitle(title) {
 		return title
 	}
-	return core.DefaultSessionTitle(time.Now())
+	return contract.DefaultSessionTitle(time.Now())
 }
 
-func loadMetaBestEffort(s core.SessionStore, id string) (string, time.Time, bool, error) {
+func loadMetaBestEffort(s contract.SessionStore, id string) (string, time.Time, bool, error) {
 	// Prefer the JSONFileStore's cheap meta read when available (avoids loading full history).
 	type metaReader interface {
 		LoadMeta(id string) (string, time.Time, bool, error)
@@ -800,11 +798,11 @@ func loadMetaBestEffort(s core.SessionStore, id string) (string, time.Time, bool
 
 // sessionMutator returns the store's SessionMetaMutator capability (SetPinned/Rename) if the store
 // supports it, else nil. Used by the session picker's pin/rename actions.
-func sessionMutator(s core.SessionStore) core.SessionMetaMutator {
+func sessionMutator(s contract.SessionStore) contract.SessionMetaMutator {
 	if s == nil {
 		return nil
 	}
-	if m, ok := s.(core.SessionMetaMutator); ok {
+	if m, ok := s.(contract.SessionMetaMutator); ok {
 		return m
 	}
 	return nil
@@ -814,7 +812,7 @@ func sessionMutator(s core.SessionStore) core.SessionMetaMutator {
 // the compactor (nil on error). Runs on the event loop.
 type compactDoneMsg struct {
 	sessionID string
-	rawOut    []core.Message
+	rawOut    []contract.Message
 	err       error
 }
 
@@ -881,7 +879,7 @@ func applyCompactDone(a *App, msg compactDoneMsg) {
 }
 
 func logCrashToFile(r interface{}, stack []byte) {
-	dir, err := paths.LogDir()
+	dir, err := contract.LogDir()
 	if err != nil {
 		// No home dir to write to: still surface the crash on stderr so it is not lost entirely.
 		fmt.Fprintf(os.Stderr, "creator-agent crash (no home dir, could not write log): %v\n%s\n", r, stack)

@@ -1,0 +1,247 @@
+package contract
+
+import (
+	"crypto/rand"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// SessionStore is the persistence abstraction for conversation history.
+type SessionStore interface {
+	Load(id string) ([]Message, error)
+	Save(id string, msgs []Message) error
+	SaveWithMeta(id, title string, msgs []Message) error
+	Clear(id string) error
+	List() ([]SessionInfo, error)
+}
+
+// SessionMetaMutator is an optional capability of a SessionStore. The TUI's session picker
+// type-asserts for it to offer pin / rename, and degrades silently when the store cannot mutate.
+type SessionMetaMutator interface {
+	SetPinned(id string, pinned bool) error
+	Rename(id, title string) error
+}
+
+type memEntry struct {
+	title     string
+	updatedAt time.Time
+	msgs      []Message
+	pinned    bool
+}
+
+// MemoryStore is the in-memory implementation. Both Load and Save copy the slice: middlewares may
+// rewrite RunState.Messages in place, and callers may keep mutating theirs afterwards — without the
+// copies either one corrupts the persisted history.
+type MemoryStore struct {
+	mu  sync.Mutex
+	mem map[string]memEntry
+}
+
+// NewMemoryStore returns an empty in-memory store.
+func NewMemoryStore() *MemoryStore { return &MemoryStore{mem: make(map[string]memEntry)} }
+
+// Load returns a copy of the stored history, or (nil, nil) when the id is unknown.
+func (m *MemoryStore) Load(id string) ([]Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.mem[id]; ok {
+		return append([]Message(nil), e.msgs...), nil
+	}
+	return nil, nil
+}
+
+// Save stores the history under a derived title.
+func (m *MemoryStore) Save(id string, msgs []Message) error {
+	return m.SaveWithMeta(id, "", msgs)
+}
+
+// SaveWithMeta stores the history with an explicit title. An empty title keeps the previous one, or
+// derives a fresh default when the session is new.
+func (m *MemoryStore) SaveWithMeta(id, title string, msgs []Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	prev, hadPrev := m.mem[id]
+	t := title
+	if t == "" {
+		if hadPrev {
+			t = prev.title
+		} else {
+			t = DeriveTitle(msgs, now)
+		}
+	}
+	pinned := false
+	if hadPrev {
+		pinned = prev.pinned
+	}
+	m.mem[id] = memEntry{title: t, updatedAt: now, msgs: append([]Message(nil), msgs...), pinned: pinned}
+	return nil
+}
+
+// SetPinned pins or unpins a session. Unknown ids are a no-op.
+func (m *MemoryStore) SetPinned(id string, pinned bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.mem[id]
+	if !ok {
+		return nil
+	}
+	e.pinned = pinned
+	m.mem[id] = e
+	return nil
+}
+
+// Rename retitles a session. Empty titles and unknown ids are no-ops.
+func (m *MemoryStore) Rename(id, title string) error {
+	if title == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.mem[id]
+	if !ok {
+		return nil
+	}
+	e.title = title
+	m.mem[id] = e
+	return nil
+}
+
+// LoadMeta returns the session's metadata without the history.
+func (m *MemoryStore) LoadMeta(id string) (title string, updatedAt time.Time, pinned bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.mem[id]
+	if !ok {
+		return "", time.Time{}, false, nil
+	}
+	return e.title, e.updatedAt, e.pinned, nil
+}
+
+// Clear drops a session. Unknown ids are a no-op.
+func (m *MemoryStore) Clear(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.mem, id)
+	return nil
+}
+
+// List returns every session's metadata, most recently updated first.
+func (m *MemoryStore) List() ([]SessionInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SessionInfo, 0, len(m.mem))
+	for id, e := range m.mem {
+		out = append(out, SessionInfo{ID: id, Title: e.title, UpdatedAt: e.updatedAt, Pinned: e.pinned})
+	}
+	sortSessionInfosByRecency(out)
+	return out, nil
+}
+
+func sortSessionInfosByRecency(infos []SessionInfo) {
+	sort.SliceStable(infos, func(i, j int) bool {
+		return infos[i].UpdatedAt.After(infos[j].UpdatedAt)
+	})
+}
+
+// SessionInfo is one row of the TUI's session picker.
+type SessionInfo struct {
+	ID        string
+	Title     string
+	UpdatedAt time.Time
+	Pinned    bool
+}
+
+const (
+	sessionIDPrefix    = "ses_"
+	sessionIDRandomLen = 16
+)
+
+// GenerateSessionID returns a new session id: a base32 millisecond timestamp followed by random
+// padding. The timestamp prefix keeps ids sortable-ish and human-greppable in the sessions dir.
+func GenerateSessionID() string {
+	return generateSessionIDAt(time.Now())
+}
+
+func generateSessionIDAt(now time.Time) string {
+	ms := now.UnixMilli()
+	enc := encodeBase32Desc(ms)
+	rnd := randomBase32(sessionIDRandomLen)
+	return sessionIDPrefix + enc + rnd
+}
+
+// DefaultSessionTitle returns the placeholder title for a session with no user turns yet. The TUI
+// hides this and shows its own "untitled" affordance (see IsDefaultSessionTitle).
+func DefaultSessionTitle(now time.Time) string {
+	return fmt.Sprintf("New session - %s", now.UTC().Format(time.RFC3339))
+}
+
+// IsDefaultSessionTitle reports whether title is still the placeholder.
+func IsDefaultSessionTitle(title string) bool {
+	return strings.HasPrefix(title, "New session - ")
+}
+
+// DeriveTitle derives a session title from the first non-empty user turn (truncated), falling back
+// to the default placeholder when there is nothing to derive from.
+func DeriveTitle(msgs []Message, now time.Time) string {
+	const titleMaxRunes = 60
+	for _, m := range msgs {
+		if m.Role != RoleUser {
+			continue
+		}
+		text := strings.TrimSpace(m.Content)
+		if text == "" {
+			continue
+		}
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			text = text[:i]
+		}
+		return truncateRunes(text, titleMaxRunes)
+	}
+	return DefaultSessionTitle(now)
+}
+
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
+}
+
+// encodeBase32Desc encodes v as a fixed-width Crockford-base32 string, most significant group first.
+func encodeBase32Desc(v int64) string {
+	const width = 10
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	out := make([]byte, width)
+	for i := width - 1; i >= 0; i-- {
+		idx := int(v & 0x1f)
+		v >>= 5
+		out[i] = alphabet[31-idx]
+	}
+	return string(out)
+}
+
+func randomBase32(n int) string {
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	out := make([]byte, n)
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		// Degenerate to time-derived bytes rather than failing: an id is only ever a local handle.
+		now := time.Now().UnixNano()
+		for i := range out {
+			out[i] = alphabet[int(now>>(uint(i)*3))&0x1f]
+		}
+		return string(out)
+	}
+	for i := 0; i < n; i++ {
+		out[i] = alphabet[int(buf[i])&0x1f]
+	}
+	return string(out)
+}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithSession builds a sim App wired with a MemoryStore + initial "repl" session, so the
@@ -15,7 +15,7 @@ import (
 func newAppWithSession(t *testing.T, w, h int) *App {
 	t.Helper()
 	a, _ := newAppWithSim(t, w, h)
-	a.rt.store = core.NewMemoryStore()
+	a.rt.store = contract.NewMemoryStore()
 	a.rt.sessionID = "repl"
 	return a
 }
@@ -61,9 +61,9 @@ func TestSwitchSessionLoadsHistory(t *testing.T) {
 	a := newAppWithSession(t, 80, 24)
 	// Pre-populate another session in the store with a 2-message history.
 	other := "ses_other"
-	if err := a.rt.store.SaveWithMeta(other, "Other", []core.Message{
-		core.UserMessage("hello other"),
-		core.AssistantMessage("hi back"),
+	if err := a.rt.store.SaveWithMeta(other, "Other", []contract.Message{
+		contract.UserMessage("hello other"),
+		contract.AssistantMessage("hi back"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestLoadCurrentSessionHistory(t *testing.T) {
 	t.Run("loads stored history", func(t *testing.T) {
 		a := newAppWithSession(t, 80, 24)
 		// Seed the current session with a user+assistant exchange.
-		seed := []core.Message{core.UserMessage("hi"), core.AssistantMessage("hello")}
+		seed := []contract.Message{contract.UserMessage("hi"), contract.AssistantMessage("hello")}
 		if err := a.rt.store.SaveWithMeta(a.rt.sessionID, "t", seed); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
@@ -156,12 +156,12 @@ func TestLoadCurrentSessionHistory(t *testing.T) {
 // TestRebuildMessagesFromCore covers the role mapping and the skip of system/tool roles.
 func TestRebuildMessagesFromCore(t *testing.T) {
 	a := newAppWithSession(t, 80, 24)
-	msgs := []core.Message{
-		core.SystemMessage("sys prompt"),                // skipped
-		core.UserMessage("user text"),                   // -> kindUser
-		core.AssistantMessage("assistant text"),         // -> kindAssistant
-		core.Message{Role: core.RoleTool, Content: "x"}, // skipped
-		core.AssistantMessage(""),                       // skipped (empty)
+	msgs := []contract.Message{
+		contract.SystemMessage("sys prompt"),        // skipped
+		contract.UserMessage("user text"),           // -> kindUser
+		contract.AssistantMessage("assistant text"), // -> kindAssistant
+		{Role: contract.RoleTool, Content: "x"},     // skipped
+		contract.AssistantMessage(""),               // skipped (empty)
 	}
 	got := rebuildMessagesFromCore(a, msgs)
 	if len(got) != 2 {
@@ -179,10 +179,10 @@ func TestRebuildMessagesFromCore(t *testing.T) {
 func TestSessionPickerOpenFilterCommit(t *testing.T) {
 	a := newAppWithSession(t, 80, 24)
 	// Seed two sessions; the current one (repl) + a target.
-	if err := a.rt.store.SaveWithMeta("ses_alpha", "Alpha chat", []core.Message{core.UserMessage("a")}); err != nil {
+	if err := a.rt.store.SaveWithMeta("ses_alpha", "Alpha chat", []contract.Message{contract.UserMessage("a")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.rt.store.SaveWithMeta("ses_beta", "Beta chat", []core.Message{core.UserMessage("b")}); err != nil {
+	if err := a.rt.store.SaveWithMeta("ses_beta", "Beta chat", []contract.Message{contract.UserMessage("b")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -236,7 +236,7 @@ func TestSessionPickerOpenFilterCommit(t *testing.T) {
 // TestSessionPickerEscClose verifies Esc dismisses without switching.
 func TestSessionPickerEscClose(t *testing.T) {
 	a := newAppWithSession(t, 80, 24)
-	if err := a.rt.store.SaveWithMeta("ses_x", "X", []core.Message{core.UserMessage("x")}); err != nil {
+	if err := a.rt.store.SaveWithMeta("ses_x", "X", []contract.Message{contract.UserMessage("x")}); err != nil {
 		t.Fatal(err)
 	}
 	openSessionPicker(a)

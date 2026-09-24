@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // paletteMaxEntries caps the visible filtered list. The registry is small today, but the cap keeps
@@ -620,7 +620,7 @@ func buildVariantEntries(a *App) []variantPickerItem {
 	return out
 }
 
-func variantSummary(v config.Variant) string {
+func variantSummary(v contract.Variant) string {
 	var parts []string
 	if len(v.Headers) > 0 {
 		parts = append(parts, fmt.Sprintf(i18n.T("variant.summary.header"), len(v.Headers)))

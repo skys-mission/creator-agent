@@ -8,15 +8,15 @@ package tui
 import (
 	"testing"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // seedSessions saves the given (id,title) pairs into the app's store and returns the store (for
 // direct assertions). Saved with a tiny delay so List() newest-first order is deterministic.
-func seedSessions(t *testing.T, a *App, sessions ...struct{ id, title string }) core.SessionStore {
+func seedSessions(t *testing.T, a *App, sessions ...struct{ id, title string }) contract.SessionStore {
 	t.Helper()
 	for _, s := range sessions {
-		if err := a.rt.store.SaveWithMeta(s.id, s.title, []core.Message{core.UserMessage("seed")}); err != nil {
+		if err := a.rt.store.SaveWithMeta(s.id, s.title, []contract.Message{contract.UserMessage("seed")}); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
 	}
@@ -85,7 +85,7 @@ func TestSessionPickerPinnedSortsToTop(t *testing.T) {
 		struct{ id, title string }{"ses_c", "Gamma"},
 	)
 	// Pin ses_c.
-	if err := store.(core.SessionMetaMutator).SetPinned("ses_c", true); err != nil {
+	if err := store.(contract.SessionMetaMutator).SetPinned("ses_c", true); err != nil {
 		t.Fatal(err)
 	}
 	openSessionPicker(a)
@@ -238,7 +238,7 @@ func TestSessionPickerDeleteCurrentStartsNewSession(t *testing.T) {
 	a := newAppWithSession(t, 80, 24)
 	store := seedSessions(t, a, struct{ id, title string }{"ses_other", "Other"})
 	// Make "repl" the current session with saved history so it appears in the picker.
-	if err := store.SaveWithMeta("repl", "The current one", []core.Message{core.UserMessage("hi")}); err != nil {
+	if err := store.SaveWithMeta("repl", "The current one", []contract.Message{contract.UserMessage("hi")}); err != nil {
 		t.Fatal(err)
 	}
 	openSessionPicker(a)
@@ -258,7 +258,7 @@ func TestSessionPickerDeleteCurrentStartsNewSession(t *testing.T) {
 }
 
 // mustList is a test helper that fatals on a store List error.
-func mustList(t *testing.T, s core.SessionStore) []core.SessionInfo {
+func mustList(t *testing.T, s contract.SessionStore) []contract.SessionInfo {
 	t.Helper()
 	infos, err := s.List()
 	if err != nil {

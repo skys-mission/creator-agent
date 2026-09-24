@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui/i18n"
-	"github.com/skys-mission/creator-agent/config"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // WizardResult is the outcome of the first-run setup wizard. Confirmed is false when the user
@@ -14,7 +14,7 @@ import (
 type WizardResult struct {
 	Confirmed   bool
 	ProfileName string
-	Profile     config.Profile
+	Profile     contract.Profile
 }
 
 // wizardStep enumerates the linear flow of the setup wizard.
@@ -36,7 +36,7 @@ type providerPreset struct {
 	label        string
 	baseURL      string
 	defaultModel string
-	providerType string // config.Profile.Type written for this preset
+	providerType string // contract.Profile.Type written for this preset
 	custom       bool
 }
 
@@ -147,7 +147,7 @@ func (wz *wizard) finalize() WizardResult {
 	return WizardResult{
 		Confirmed:   true,
 		ProfileName: preset.id,
-		Profile: config.Profile{
+		Profile: contract.Profile{
 			Type:    preset.providerType,
 			BaseURL: strings.TrimSpace(wz.baseURL.Value()),
 			APIKey:  strings.TrimSpace(wz.apiKey.Value()),

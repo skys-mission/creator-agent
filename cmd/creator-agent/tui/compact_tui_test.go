@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // TestStartCompactNoCompactor verifies /compact reports unavailable when no compactor is injected.
@@ -27,7 +27,7 @@ func TestStartCompactNoCompactor(t *testing.T) {
 func TestStartCompactRefusedWhileBusy(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
 	a.rt.sessionID = "ses"
-	a.rt.compactor = func(_ context.Context, _ string) ([]core.Message, error) { return nil, nil }
+	a.rt.compactor = func(_ context.Context, _ string) ([]contract.Message, error) { return nil, nil }
 	a.status = statusThinking
 	startCompact(a)
 	last := a.messages[len(a.messages)-1].content.String()
@@ -42,9 +42,9 @@ func TestApplyCompactDoneReplacesMessages(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
 	a.rt.sessionID = "ses"
 	a.messages = []msgBlock{{kind: kindUser}, {kind: kindAssistant}, {kind: kindUser}}
-	compacted := []core.Message{
-		core.UserMessage("[conversation summary so far]\nthe summary"),
-		core.UserMessage("recent turn"),
+	compacted := []contract.Message{
+		contract.UserMessage("[conversation summary so far]\nthe summary"),
+		contract.UserMessage("recent turn"),
 	}
 	applyCompactDone(a, compactDoneMsg{sessionID: "ses", rawOut: compacted})
 	// 2 compacted user blocks + 1 system note ("History compacted…").
@@ -83,10 +83,10 @@ func TestStartCompactAsyncFlow(t *testing.T) {
 	}
 	// Use a slow compactor (small delay) so we can observe statusCompacting.
 	done := make(chan struct{})
-	a.rt.compactor = func(_ context.Context, _ string) ([]core.Message, error) {
+	a.rt.compactor = func(_ context.Context, _ string) ([]contract.Message, error) {
 		time.Sleep(20 * time.Millisecond)
 		close(done)
-		return []core.Message{core.UserMessage("compacted")}, nil
+		return []contract.Message{contract.UserMessage("compacted")}, nil
 	}
 	startCompact(a)
 	if a.status != statusCompacting {

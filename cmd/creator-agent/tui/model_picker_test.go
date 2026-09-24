@@ -8,18 +8,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/skys-mission/creator-agent/config"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithProfiles builds a sim App with injected profiles + a mock rebuild that records the
 // last-switched name. The current profile is "current".
-func newAppWithProfiles(t *testing.T, profiles map[string]config.Profile) (*App, *string) {
+func newAppWithProfiles(t *testing.T, profiles map[string]contract.Profile) (*App, *string) {
 	t.Helper()
 	a, _ := newAppWithSim(t, 80, 24)
 	a.rt.profiles = profiles
 	a.rt.prof = profile{Name: "current", Model: "cur-model", BaseURL: "https://api.cur.com"}
 	var switchedTo string
-	a.rt.rebuild = func(name string) (config.Profile, error) {
+	a.rt.rebuild = func(name string) (contract.Profile, error) {
 		switchedTo = name
 		p := profiles[name]
 		return p, nil
@@ -29,7 +29,7 @@ func newAppWithProfiles(t *testing.T, profiles map[string]config.Profile) (*App,
 
 // TestModelPickerOpenFromProfiles verifies /models lists every injected profile.
 func TestModelPickerOpenFromProfiles(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"alpha": {Model: "a-model", BaseURL: "https://a.com"},
 		"beta":  {Model: "b-model", BaseURL: "https://b.com"},
 	}
@@ -74,7 +74,7 @@ func TestModelPickerEmptyProfilesDoesNotOpen(t *testing.T) {
 
 // TestModelPickerCurrentPinnedAndMarked verifies the current profile is pinned to the top.
 func TestModelPickerCurrentPinnedAndMarked(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 		"zzz":     {Model: "z", BaseURL: "https://z.com"},
 		"aaa":     {Model: "a", BaseURL: "https://a.com"},
@@ -92,7 +92,7 @@ func TestModelPickerCurrentPinnedAndMarked(t *testing.T) {
 
 // TestModelPickerFilter verifies typing narrows the list.
 func TestModelPickerFilter(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"alpha": {Model: "gpt-4o", BaseURL: "https://a.com"},
 		"beta":  {Model: "claude", BaseURL: "https://b.com"},
 	}
@@ -111,7 +111,7 @@ func TestModelPickerFilter(t *testing.T) {
 
 // TestModelPickerCommitSwitches verifies Enter on a selected profile calls rebuild and updates prof.
 func TestModelPickerCommitSwitches(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 		"target":  {Model: "tgt-model", BaseURL: "https://tgt.com"},
 	}
@@ -141,7 +141,7 @@ func TestModelPickerCommitSwitches(t *testing.T) {
 
 // TestModelPickerCommitNoopForCurrent verifies committing the current profile does not call rebuild.
 func TestModelPickerCommitNoopForCurrent(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 		"other":   {Model: "o", BaseURL: "https://o.com"},
 	}
@@ -159,7 +159,7 @@ func TestModelPickerCommitNoopForCurrent(t *testing.T) {
 
 // TestModelPickerEscClose verifies Esc dismisses without switching.
 func TestModelPickerEscClose(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 		"other":   {Model: "o", BaseURL: "https://o.com"},
 	}
@@ -177,7 +177,7 @@ func TestModelPickerEscClose(t *testing.T) {
 // TestModelCommandNoArgOpensPicker verifies /model with no argument opens the picker when profiles
 // are configured (opencode-aligned behavior).
 func TestModelCommandNoArgOpensPicker(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 	}
 	a, _ := newAppWithProfiles(t, profiles)
@@ -191,7 +191,7 @@ func TestModelCommandNoArgOpensPicker(t *testing.T) {
 
 // TestModelCommandWithArgSwitches verifies the /model <name> text path still switches directly.
 func TestModelCommandWithArgSwitches(t *testing.T) {
-	profiles := map[string]config.Profile{
+	profiles := map[string]contract.Profile{
 		"current": {Model: "cur", BaseURL: "https://cur.com"},
 		"target":  {Model: "tgt", BaseURL: "https://tgt.com"},
 	}
@@ -212,8 +212,8 @@ func TestModelCommandWithArgSwitches(t *testing.T) {
 func TestApplyProfileSwitchError(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
 	a.rt.prof = profile{Name: "current", Model: "cur"}
-	a.rt.rebuild = func(name string) (config.Profile, error) {
-		return config.Profile{}, errFailed
+	a.rt.rebuild = func(name string) (contract.Profile, error) {
+		return contract.Profile{}, errFailed
 	}
 	prevName := a.rt.prof.Name
 	err := applyProfileSwitch(a, "bogus")

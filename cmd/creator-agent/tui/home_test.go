@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/skys-mission/creator-agent/core"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithStore builds a sim App wired with a MemoryStore seeded with the given sessions (in
@@ -16,12 +16,12 @@ import (
 func newAppWithStore(t *testing.T, sessionSeeds []struct{ id, title string }) *App {
 	t.Helper()
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore()
+	a.rt.store = contract.NewMemoryStore()
 	a.rt.currentAgent = "build"
 	// Seed sessions oldest-first with a small delay so the stable newest-first sort preserves order.
 	for i, s := range sessionSeeds {
 		_ = i
-		_ = a.rt.store.SaveWithMeta(s.id, s.title, []core.Message{core.UserMessage("seed")})
+		_ = a.rt.store.SaveWithMeta(s.id, s.title, []contract.Message{contract.UserMessage("seed")})
 		time.Sleep(2 * time.Millisecond)
 	}
 	return a
@@ -224,7 +224,7 @@ func TestHomeEmptyStoreNoCrash(t *testing.T) {
 	defer func() { homeTipPick = prev }()
 
 	a, _ := newAppWithSim(t, 80, 24)
-	a.rt.store = core.NewMemoryStore() // empty store
+	a.rt.store = contract.NewMemoryStore() // empty store
 	a.rt.currentAgent = "build"
 	txt := joinedHomeText(a)
 	if strings.Contains(txt, "recent sessions") {
