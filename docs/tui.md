@@ -122,7 +122,7 @@ TUI 崩溃或渲染异常难复现时按序上这些工具（均不改业务代�
 
 两个坑：
 
-- **Go 1.25 的 `mallocgcSmallNoscan` 分配路径与 efence 不完全兼容**，efence 下偶发 SIGBUS 多属误报。
+- **Go 1.25 的 `mallocgcSmallNoscan` 分配路径与 efence 不完全兼容**，efence 下偶发 SIGBUS 多属误报。（工具链已升 Go 1.27，此条为 1.25 时代记录，未重新验证。）
 - **checkptr 改变分配时序**，常能把"普通版必崩"变成"不崩但暴露逻辑 bug"，反而适合定位渲染类问题。
 
 ### `cmd/creator-agent/diag`：不可 recover 的崩溃专用
@@ -138,7 +138,7 @@ TUI 崩溃或渲染异常难复现时按序上这些工具（均不改业务代�
 
 **`write` 工具触发时偶发 `fatal error: found bad pointer`（heap corruption，不可 recover）。**
 
-已排除本仓库代码：无 `unsafe`、`-race` 干净、`-gcflags=all=-d=checkptr` 无报告。疑为 Go 1.25 runtime 在该路径的分配问题。当时受依赖限制（mcp-go 要求 Go ≥ 1.25.5）无法降级 Go 复现定位。
+已排除本仓库代码：无 `unsafe`、`-race` 干净、`-gcflags=all=-d=checkptr` 无报告。疑为 Go 1.25 runtime 在该路径的分配问题。当时受依赖限制（mcp-go 要求 Go ≥ 1.25.5）无法降级 Go 复现定位。**工具链已升 Go 1.27.0（go.mod `go 1.27.0`），升级后未复现验证；若再现仍按本节路径排查。**
 
 重建时如果这个复现了，**别再从头排查业务逻辑**，直接走第 9 节工具链 + `diag` 的 `fatal.log` / `trace.log`。缩小复现面后再决定是否上报 Go runtime。
 

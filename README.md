@@ -12,6 +12,7 @@
 
 | | |
 |---|---|
+| `kernel/` | 底层组件生命周期框架（[cordis](https://github.com/cordiverse/cordis) 极简版）：组件注册、按名查找、依赖序启动、逆序销毁、全局状态机。零外部依赖，选型记录与七条不变量见 [docs/kernel.md](docs/kernel.md) |
 | `contract/` | TUI 消费的全部 API：领域模型（`Message` / `Event` / `ToolInfo` / `SessionStore` / `Agent`）+ 运行时控制面（`Mode` / `AllowSet` / `SandboxController`）+ 少量叶子助手。**不含任何 agent 逻辑** |
 | `cmd/creator-agent/tui/` | 自研全屏 TUI，**不依赖 bubbletea / tcell**。含 `tui/terminal/`（termios raw 模式 / alt screen / SIGWINCH / 输入解码）与 `tui/i18n/` |
 | `cmd/creator-agent/diag/` | 不可 recover 崩溃（heap corruption 类 `fatal error`）的落盘诊断：`fatal.log` + `trace.log` |
@@ -24,19 +25,21 @@ core（agent loop / 工具 / 中间件 / 防腐层 adapters）、config 加载�
 
 `contract/` 就是它们要实现的边界：类型形状已经定死，新 core 实现 `contract.Agent` 并把 `Event` 流喂进来即可，TUI 侧零改动。接入面见 [docs/tui.md](docs/tui.md) 第 11 节。
 
+新 core 以 `kernel/` 为地基：每个模块实现 `kernel.Component` 注册进 `kernel.App`，启动顺序与退出销毁由框架保证（见 [docs/kernel.md](docs/kernel.md)）。
+
 ## 开发
 
 ```bash
 make test        # go test -race ./...   ← 提交前门槛，CI 跑这个
 make test-fast   # go test ./...         ← 本地迭代
-make build       # go build ./...        （暂无 main 包，仅编译检查）
+make build       # 构建 creator-agent 二进制 + 全仓编译检查
 make vet         # go vet ./...
 make fmt         # gofmt -s -w .
 make bench       # 纯函数热路径基准
 make help        # 所有命令
 ```
 
-要求 **Go 1.25+**（构建时）。运行时零依赖。
+要求 **Go 1.27+**（构建时）。运行时零依赖。
 
 提交前确保 `make test` + `make vet` + `make fmt` 全绿。
 

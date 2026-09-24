@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
           cache: true
 
       - name: Format check
@@ -53,30 +53,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
           cache: true
 
       - name: Stress test with race detector
         run: go test -race -count=10 ./...
 
-  # 真实沙箱冒烟：装 bubblewrap 后实际执行 bwrap，验证写隔离生效（非仅参数构造）
-  sandbox-smoke:
-    name: Sandbox smoke (bwrap write isolation)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache: true
-
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Sandbox smoke test
-        run: go test -tags sandboxsmoke -run TestSandboxSmoke -count=1 ./core/builtins/
+  # 真实沙箱冒烟：装 bubblewrap 后实际执行 bwrap，验证写隔离生效（非仅参数构造）。
+  # 暂时下线：core/builtins 待重建（sandboxsmoke 测试文件随之移除），core 重建后恢复此 job。
+  # 恢复形态参考：go test -tags sandboxsmoke -run TestSandboxSmoke -count=1 ./core/builtins/
 
   # macOS 跑 bash 进程组 / sandbox 等平台相关代码（darwin 路径需覆盖）
   test-macos:
@@ -88,7 +73,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
           cache: true
 
       - name: Build

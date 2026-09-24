@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- **Go 1.25+**（构建时）。运行时零依赖（单二进制）。
+- **Go 1.27+**（构建时）。运行时零依赖（单二进制）。
 - 无需 Node / Python / 其他运行时。
 
 ## 常用命令
@@ -25,11 +25,13 @@ make help        # 查看所有命令
 ## 项目结构
 
 ```
+kernel/                 组件生命周期框架：注册 / 按名查找 / 依赖序启动 / 逆序销毁
 contract/               TUI 消费的全部 API（领域模型 + 控制面 + 叶子助手）
 cmd/creator-agent/
   ├── tui/              自研全屏 TUI 渲染层（保留）+ tui/terminal/ + tui/i18n/
   └── diag/             不可 recover 崩溃的落盘诊断（fatal.log / trace.log）
 docs/tui.md             渲染不变量与踩坑经验
+docs/kernel.md          kernel 选型记录与生命周期不变量
 scripts/                dev-sandbox.sh 隔离测试沙箱（待 CLI 重建后恢复 make target）
 ```
 
@@ -39,6 +41,7 @@ scripts/                dev-sandbox.sh 隔离测试沙箱（待 CLI 重建后恢
 - `contract/` 允许的只有三类：完整未删减的领域模型（新 core 要产出/消费的形状）、TUI 驱动的运行时控制面（`ModeController` / `AllowSet` / `SandboxController` / `AskResolver`）、TUI 直接调用的叶子助手（会话 ID 与标题派生、`ApproveKey` 分组、错误提示、磁盘路径）。
 - **TUI 只认 `contract/` 的类型**，不认任何 provider SDK 类型。SDK 只能活在未来 core 的 adapter 层里，且不得越过 adapter 边界外泄。
 - **工具能力声明 fail-closed**：`ToolInfo` 不声明 `ReadOnly` 视为写、不声明 `ConcurrencySafe` 视为不可并发、不声明 `MaxResultChars` 视为不落盘。加工具时保持这个语义。
+- **依赖方向单向**：`kernel/` 只依赖标准库；`contract/` 不依赖 core；未来 core 只 import `kernel` + `contract`；provider SDK 只活在 core 的 adapter 层；装配（注册组件、接信号、跑 `app.Run`）只在 `cmd/`。
 
 ## 测试策略
 
