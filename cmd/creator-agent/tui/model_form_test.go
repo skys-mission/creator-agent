@@ -515,6 +515,31 @@ func TestModelFormReasoningKeyPresets(t *testing.T) {
 	}
 }
 
+func TestModelFormEntryRowOpensOnEnterOnly(t *testing.T) {
+	// ←→ on the entry row must not drill in: a Right-open would invite Left to go back, which
+	// the page cannot honor. Enter is the only key that opens.
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	for i := 0; i < 5; i++ {
+		injectKey(a, KeyTab)
+	}
+	if a.modelForm.focus != formFieldReasoningEntry {
+		t.Fatalf("focus = %v, want the reasoning entry row", a.modelForm.focus)
+	}
+	injectKey(a, KeyRight)
+	if a.modelForm.reasoning {
+		t.Fatal("Right opened the reasoning page")
+	}
+	injectKey(a, KeyLeft)
+	if a.modelForm.reasoning {
+		t.Fatal("Left opened the reasoning page")
+	}
+	injectKey(a, KeyEnter)
+	if !a.modelForm.reasoning {
+		t.Fatal("Enter did not open the reasoning page")
+	}
+}
+
 func TestModelFormReasoningPageEscBack(t *testing.T) {
 	a, _ := newModelFormApp(t)
 	openForm(t, a)

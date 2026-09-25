@@ -458,7 +458,7 @@ var enDict = map[string]string{
 	"model_form.value.key.reasoning":           "reasoning (vLLM/GPT-OSS)",
 	"model_form.value.key.reasoning_text":      "reasoning_text (rare gateways)",
 	"model_form.confirm.prompt":                "Review and confirm:",
-	"model_form.footer.form":                   "(Enter confirm · ↑↓/Tab field · ←→ cycle/open · Esc cancel)",
+	"model_form.footer.form":                   "(Enter confirm/open · ↑↓/Tab field · ←→ cycle · Esc cancel)",
 	"model_form.footer.reasoning":              "(Enter confirm · ↑↓/Tab field · ←→ cycle · Esc back)",
 	"model_form.footer.confirm":                "(Enter create · Esc back · Ctrl+C cancel)",
 	"model_form.created":                       "Created model %q, saved to %s (%d total)",

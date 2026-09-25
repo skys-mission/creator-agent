@@ -458,7 +458,7 @@ var zhDict = map[string]string{
 	"model_form.value.key.reasoning":           "reasoning（vLLM/GPT-OSS）",
 	"model_form.value.key.reasoning_text":      "reasoning_text（少数网关）",
 	"model_form.confirm.prompt":                "确认创建：",
-	"model_form.footer.form":                   "(Enter 确认 · ↑↓/Tab 切换 · ←→ 切换/打开 · Esc 取消)",
+	"model_form.footer.form":                   "(Enter 确认/打开 · ↑↓/Tab 切换 · ←→ 切换 · Esc 取消)",
 	"model_form.footer.reasoning":              "(Enter 确认 · ↑↓/Tab 切换 · ←→ 切换 · Esc 返回)",
 	"model_form.footer.confirm":                "(Enter 创建 · Esc 返回 · Ctrl+C 取消)",
 	"model_form.created":                       "已创建模型 %q，保存到 %s（共 %d 个）",

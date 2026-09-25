@@ -323,11 +323,11 @@ func handleModelFormKey(a *App, e *EventKey) {
 		}
 		return
 	case KeyRight:
+		// The reasoning entry row opens on Enter only: a Right-open would invite Left to go
+		// back, which a drill-in page cannot honor. ←→ stays a pure value key everywhere.
 		if f.focus.isText() {
 			f.textBuf(f.focus).CursorRight()
-		} else if f.focus == formFieldReasoningEntry {
-			openReasoningPage(a)
-		} else {
+		} else if f.focus != formFieldReasoningEntry {
 			cycleChoice(f, +1)
 		}
 		return
