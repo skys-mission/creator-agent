@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/packages/respjson"
 	"github.com/openai/openai-go/shared"
@@ -61,9 +62,9 @@ func reasoningString(extras map[string]respjson.Field, key string) (string, bool
 
 // buildParams translates a protocol-neutral model request into the Chat Completions request.
 // Only what the protocol can faithfully carry is mapped; anything else is an error, never a
-// silent drop. echoKey non-empty enables thinking round-trip on assistant history (see
-// Client.echoKey).
-func buildParams(modelID string, req *contract.ModelRequest, echoKey string) (openai.ChatCompletionNewParams, error) {
+// silent drop (one documented carve-out: kind=toggle reasoning, see below). echoKey non-empty
+// enables thinking round-trip on assistant history (see Client.echoKey).
+func buildParams(modelID string, req *contract.ModelRequest, echoKey string, reasoning contract.Reasoning) (openai.ChatCompletionNewParams, error) {
 	if req == nil || len(req.Messages) == 0 {
 		return openai.ChatCompletionNewParams{}, errors.New("openaichat: request has no messages")
 	}
@@ -79,13 +80,50 @@ func buildParams(modelID string, req *contract.ModelRequest, echoKey string) (op
 	if err != nil {
 		return openai.ChatCompletionNewParams{}, err
 	}
-	return openai.ChatCompletionNewParams{
+	out := openai.ChatCompletionNewParams{
 		Model:    modelID,
 		Messages: msgs,
 		Tools:    tools,
 		// Usage is how the loop accounts cost and context budget; always ask for the totals.
 		StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: param.NewOpt(true)},
-	}, nil
+	}
+	// Thinking-depth control. kind=effort sends the model's default level as the top-level enum
+	// field reasoning_effort (survey in docs/architecture.md §4); kind=none sends nothing (a
+	// stray parameter 400s models that don't take one); kind=toggle has no standard field here
+	// and is carried by request options instead — see reasoningRequestOptions.
+	if reasoning.Kind == contract.ReasoningKindEffort && reasoning.Default != "" {
+		out.ReasoningEffort = openai.ReasoningEffort(reasoning.Default)
+	}
+	return out, nil
+}
+
+// reasoningRequestOptions maps kind=toggle onto the gateway's switch field. There is no standard
+// boolean on this protocol — the three surveyed dialects (docs/architecture.md §4) disagree on
+// both the field name and the value shape, hence dialects instead of one universal field:
+//
+//	enable_thinking: true|false                    DashScope/Qwen and most CN-compatible gateways
+//	think: true|false                              Ollama and its gateways
+//	thinking: {"type": "enabled"|"disabled"}       Zhipu/GLM
+//
+// kind=effort needs no options (buildParams carries reasoning_effort); kind=none sends nothing.
+func reasoningRequestOptions(r contract.Reasoning) []option.RequestOption {
+	if r.Kind != contract.ReasoningKindToggle {
+		return nil
+	}
+	on := r.Default == contract.ReasoningToggleOn
+	switch r.ToggleDialect {
+	case contract.ToggleDialectEnableThinking:
+		return []option.RequestOption{option.WithJSONSet("enable_thinking", on)}
+	case contract.ToggleDialectThink:
+		return []option.RequestOption{option.WithJSONSet("think", on)}
+	case contract.ToggleDialectThinkingType:
+		typ := "disabled"
+		if on {
+			typ = "enabled"
+		}
+		return []option.RequestOption{option.WithJSONSet("thinking", map[string]any{"type": typ})}
+	}
+	return nil
 }
 
 // messageParam maps one conversation message. Request-side fields with no home in this protocol

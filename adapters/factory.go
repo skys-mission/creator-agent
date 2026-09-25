@@ -4,23 +4,25 @@ import (
 	"fmt"
 
 	"github.com/skys-mission/creator-agent/adapters/openaichat"
+	"github.com/skys-mission/creator-agent/contract"
 )
 
 // New builds the ModelClient for a configured endpoint. One case per protocol; adding a protocol
 // means adding its subpackage and one line here.
-func New(m Model) (ModelClient, error) {
+func New(m contract.Model) (ModelClient, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
 	switch m.Protocol {
-	case ProtocolOpenAIChat:
+	case contract.ProtocolOpenAIChat:
 		return openaichat.New(openaichat.Config{
 			Name:                m.Name,
 			BaseURL:             m.BaseURL,
 			ModelID:             m.ModelID,
 			APIKey:              m.APIKey,
-			DisableThinkingEcho: m.Params.ThinkingEcho == ThinkingEchoOff,
+			DisableThinkingEcho: m.Params.ThinkingEcho == contract.ThinkingEchoOff,
 			ReasoningKey:        m.Params.ReasoningKey,
+			Reasoning:           m.Params.Reasoning,
 		})
 	default:
 		return nil, fmt.Errorf("adapters: unknown protocol %q", m.Protocol)

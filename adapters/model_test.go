@@ -3,81 +3,12 @@ package adapters
 import (
 	"strings"
 	"testing"
+
+	"github.com/skys-mission/creator-agent/contract"
 )
 
-func TestModelValidate(t *testing.T) {
-	full := Model{
-		Name:     "gpt",
-		Protocol: ProtocolOpenAIChat,
-		BaseURL:  "https://example.com/v1",
-		ModelID:  "m1",
-		APIKey:   "k",
-	}
-	tests := []struct {
-		name    string
-		mutate  func(*Model)
-		wantErr string
-	}{
-		{"full config ok", func(m *Model) {}, ""},
-		{"empty key allowed", func(m *Model) { m.APIKey = "" }, ""},
-		{"name optional", func(m *Model) { m.Name = "" }, ""},
-		{"missing protocol", func(m *Model) { m.Protocol = "" }, "Protocol is required"},
-		{"missing model id", func(m *Model) { m.ModelID = "" }, "ModelID is required"},
-		{"bad scheme", func(m *Model) { m.BaseURL = "ftp://example.com/v1" }, "invalid BaseURL"},
-		{"no host", func(m *Model) { m.BaseURL = "https://" }, "invalid BaseURL"},
-		{"unparsable", func(m *Model) { m.BaseURL = "http://[::1" }, "invalid BaseURL"},
-		{"echo default on", func(m *Model) { m.Params.ThinkingEcho = "" }, ""},
-		{"echo explicit on", func(m *Model) { m.Params.ThinkingEcho = ThinkingEchoOn }, ""},
-		{"echo off", func(m *Model) { m.Params.ThinkingEcho = ThinkingEchoOff }, ""},
-		{"echo unknown", func(m *Model) { m.Params.ThinkingEcho = "maybe" }, "unknown ThinkingEcho mode"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := full
-			tt.mutate(&m)
-			err := m.Validate()
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Validate() = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestModelStringMasksAPIKey(t *testing.T) {
-	const secret = "sk-super-secret-value"
-	m := Model{Protocol: ProtocolOpenAIChat, ModelID: "m1", APIKey: secret}
-	s := m.String()
-	if strings.Contains(s, secret) {
-		t.Fatalf("String() leaked the API key: %s", s)
-	}
-	if !strings.Contains(s, "[set]") {
-		t.Fatalf("String() should report the key as set: %s", s)
-	}
-	empty := Model{Protocol: ProtocolOpenAIChat, ModelID: "m1"}
-	if !strings.Contains(empty.String(), "[unset]") {
-		t.Fatalf("String() should report an absent key as unset: %s", empty.String())
-	}
-}
-
-func TestModelDisplayName(t *testing.T) {
-	m := Model{ModelID: "m1"}
-	if got := m.DisplayName(); got != "m1" {
-		t.Fatalf("DisplayName() = %q, want fallback to ModelID", got)
-	}
-	m.Name = "my model"
-	if got := m.DisplayName(); got != "my model" {
-		t.Fatalf("DisplayName() = %q, want %q", got, "my model")
-	}
-}
-
 func TestNewFactory(t *testing.T) {
-	c, err := New(Model{Protocol: ProtocolOpenAIChat, ModelID: "m1", BaseURL: "https://example.com/v1"})
+	c, err := New(contract.Model{Protocol: contract.ProtocolOpenAIChat, ModelID: "m1", BaseURL: "https://example.com/v1"})
 	if err != nil {
 		t.Fatalf("New() = %v, want nil", err)
 	}
@@ -85,7 +16,7 @@ func TestNewFactory(t *testing.T) {
 		t.Fatalf("Name() = %q, want ModelID fallback", got)
 	}
 
-	c2, err := New(Model{Name: "label", Protocol: ProtocolOpenAIChat, ModelID: "m1"})
+	c2, err := New(contract.Model{Name: "label", Protocol: contract.ProtocolOpenAIChat, ModelID: "m1"})
 	if err != nil {
 		t.Fatalf("New() = %v, want nil", err)
 	}
@@ -93,12 +24,12 @@ func TestNewFactory(t *testing.T) {
 		t.Fatalf("Name() = %q, want %q", got, "label")
 	}
 
-	if _, err := New(Model{Protocol: "no-such-protocol", ModelID: "m1"}); err == nil ||
+	if _, err := New(contract.Model{Protocol: "no-such-protocol", ModelID: "m1"}); err == nil ||
 		!strings.Contains(err.Error(), "unknown protocol") {
 		t.Fatalf("New() with unknown protocol = %v, want unknown protocol error", err)
 	}
 
-	if _, err := New(Model{Protocol: ProtocolOpenAIChat}); err == nil {
+	if _, err := New(contract.Model{Protocol: contract.ProtocolOpenAIChat}); err == nil {
 		t.Fatal("New() with missing ModelID = nil, want validation error")
 	}
 }

@@ -41,10 +41,11 @@ type wireTool struct {
 }
 
 type wireParams struct {
-	Model         string        `json:"model"`
-	Messages      []wireMessage `json:"messages"`
-	Tools         []wireTool    `json:"tools"`
-	StreamOptions struct {
+	Model           string        `json:"model"`
+	Messages        []wireMessage `json:"messages"`
+	Tools           []wireTool    `json:"tools"`
+	ReasoningEffort string        `json:"reasoning_effort"`
+	StreamOptions   struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
 }
@@ -72,7 +73,7 @@ func TestBuildParamsMessageMapping(t *testing.T) {
 			contract.ToolMessage("file content", "call_1", "read"),
 		},
 	}
-	params, err := buildParams("test-model", req, "")
+	params, err := buildParams("test-model", req, "", contract.Reasoning{})
 	if err != nil {
 		t.Fatalf("buildParams() = %v, want nil", err)
 	}
@@ -114,6 +115,64 @@ func TestBuildParamsMessageMapping(t *testing.T) {
 	}
 }
 
+func TestBuildParamsReasoningEffort(t *testing.T) {
+	req := &contract.ModelRequest{Messages: []contract.Message{contract.UserMessage("hi")}}
+
+	// kind=effort: the default level goes out as the top-level wire enum reasoning_effort.
+	params, err := buildParams("m", req, "", contract.Reasoning{
+		Kind: contract.ReasoningKindEffort,
+		Efforts: []string{
+			contract.ReasoningEffortLow, contract.ReasoningEffortHigh,
+		},
+		Default: contract.ReasoningEffortHigh,
+	})
+	if err != nil {
+		t.Fatalf("buildParams() = %v, want nil", err)
+	}
+	wire, _ := marshalParams(t, params)
+	if wire.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort = %q, want high", wire.ReasoningEffort)
+	}
+
+	// Levels without an SDK constant ("max") still pass through as the wire string.
+	params, err = buildParams("m", req, "", contract.Reasoning{
+		Kind:    contract.ReasoningKindEffort,
+		Efforts: []string{contract.ReasoningEffortMax},
+		Default: contract.ReasoningEffortMax,
+	})
+	if err != nil {
+		t.Fatalf("buildParams() = %v, want nil", err)
+	}
+	wire, _ = marshalParams(t, params)
+	if wire.ReasoningEffort != "max" {
+		t.Fatalf("reasoning_effort = %q, want max", wire.ReasoningEffort)
+	}
+
+	// kind=none: nothing is sent (fail-safe default).
+	params, err = buildParams("m", req, "", contract.Reasoning{})
+	if err != nil {
+		t.Fatalf("buildParams() = %v, want nil", err)
+	}
+	wire, _ = marshalParams(t, params)
+	if wire.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want absent", wire.ReasoningEffort)
+	}
+
+	// kind=toggle: no standard field exists on this protocol (gateways name their own switch),
+	// so the declaration is preserved but not sent — the documented carve-out.
+	params, err = buildParams("m", req, "", contract.Reasoning{
+		Kind:    contract.ReasoningKindToggle,
+		Default: contract.ReasoningToggleOn,
+	})
+	if err != nil {
+		t.Fatalf("buildParams() = %v, want nil", err)
+	}
+	wire, _ = marshalParams(t, params)
+	if wire.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want absent for toggle kind", wire.ReasoningEffort)
+	}
+}
+
 func TestBuildParamsTools(t *testing.T) {
 	req := &contract.ModelRequest{
 		Messages: []contract.Message{contract.UserMessage("hi")},
@@ -122,7 +181,7 @@ func TestBuildParamsTools(t *testing.T) {
 			{Name: "noop"},
 		},
 	}
-	params, err := buildParams("m", req, "")
+	params, err := buildParams("m", req, "", contract.Reasoning{})
 	if err != nil {
 		t.Fatalf("buildParams() = %v, want nil", err)
 	}
@@ -170,7 +229,7 @@ func TestBuildParamsErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := buildParams("m", tt.req, "")
+			_, err := buildParams("m", tt.req, "", contract.Reasoning{})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("buildParams() = %v, want error containing %q", err, tt.wantErr)
 			}
@@ -257,7 +316,7 @@ func TestBuildParamsThinkingEcho(t *testing.T) {
 	}
 	messageKey := func(t *testing.T, echoKey string) map[string]any {
 		t.Helper()
-		params, err := buildParams("m", req, echoKey)
+		params, err := buildParams("m", req, echoKey, contract.Reasoning{})
 		if err != nil {
 			t.Fatalf("buildParams() = %v, want nil", err)
 		}

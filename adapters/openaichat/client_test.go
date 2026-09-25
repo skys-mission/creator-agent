@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,61 @@ func TestStreamEndToEnd(t *testing.T) {
 	msgs, _ := cap.body["messages"].([]any)
 	if len(msgs) != 1 {
 		t.Fatalf("messages = %v, want 1", cap.body["messages"])
+	}
+}
+
+func TestStreamToggleDialectWire(t *testing.T) {
+	// kind=toggle must land on the wire in the exact shape of the pinned dialect — and must not
+	// smuggle in reasoning_effort (that is the effort kind's field).
+	cases := []struct {
+		name    string
+		dialect contract.ReasoningToggleDialect
+		def     string
+		wantKey string
+		wantVal any
+	}{
+		{"dashscope on", contract.ToggleDialectEnableThinking, contract.ReasoningToggleOn, "enable_thinking", true},
+		{"dashscope off", contract.ToggleDialectEnableThinking, contract.ReasoningToggleOff, "enable_thinking", false},
+		{"ollama on", contract.ToggleDialectThink, contract.ReasoningToggleOn, "think", true},
+		{"ollama off", contract.ToggleDialectThink, contract.ReasoningToggleOff, "think", false},
+		{"glm on", contract.ToggleDialectThinkingType, contract.ReasoningToggleOn, "thinking", map[string]any{"type": "enabled"}},
+		{"glm off", contract.ToggleDialectThinkingType, contract.ReasoningToggleOff, "thinking", map[string]any{"type": "disabled"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cap := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
+				flusher, _ := w.(http.Flusher)
+				writeSSE(w, flusher,
+					testChunkPrefix+`"choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+					`[DONE]`,
+				)
+			})
+			c, err := New(Config{
+				ModelID: "test-model", APIKey: "k", BaseURL: srv.URL + "/v1",
+				Reasoning: contract.Reasoning{
+					Kind: contract.ReasoningKindToggle, ToggleDialect: tc.dialect, Default: tc.def,
+				},
+			})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			ch, err := c.Stream(context.Background(), &contract.ModelRequest{
+				Messages: []contract.Message{contract.UserMessage("hi")},
+			})
+			if err != nil {
+				t.Fatalf("Stream() = %v", err)
+			}
+			collect(t, ch, 5*time.Second)
+			if cap.broken {
+				t.Fatal("server could not decode the request body")
+			}
+			if got := cap.body[tc.wantKey]; !reflect.DeepEqual(got, tc.wantVal) {
+				t.Fatalf("wire %s = %#v, want %#v", tc.wantKey, got, tc.wantVal)
+			}
+			if _, ok := cap.body["reasoning_effort"]; ok {
+				t.Fatalf("toggle kind must not send reasoning_effort: %v", cap.body["reasoning_effort"])
+			}
+		})
 	}
 }
 

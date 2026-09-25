@@ -19,6 +19,7 @@ const AppDir = ".creator"
 const (
 	HistoryFileName   = "history.json"
 	LastReplyFileName = "last-reply.md"
+	ModelsFileName    = "models.json"
 )
 
 // DataDir returns the runtime data directory (~/.creator). It does not create the directory.
@@ -47,3 +48,8 @@ func HistoryFile() (string, error) { return inData(HistoryFileName) }
 
 // LastReplyFile returns the path used by /copy to save the last assistant reply (data dir).
 func LastReplyFile() (string, error) { return inData(LastReplyFileName) }
+
+// ModelsFile returns the path of the model objects created in the TUI (data dir). The file holds
+// resolved API keys: it is written 0600 and, like every credential-bearing file, must never enter
+// a git repository.
+func ModelsFile() (string, error) { return inData(ModelsFileName) }

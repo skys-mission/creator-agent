@@ -1,6 +1,6 @@
 // Package adapters is the model adapter layer: the only place in the project allowed to import
-// provider SDKs. It turns a configured endpoint (Model) into a ModelClient speaking one wire
-// protocol, and back-translates SDK output into contract events.
+// provider SDKs. It turns a configured endpoint (contract.Model) into a ModelClient speaking one
+// wire protocol, and back-translates SDK output into contract events.
 //
 // Configuration keys on protocol, not vendor: a third-party endpoint that speaks the OpenAI
 // Chat Completions dialect is ProtocolOpenAIChat no matter who runs it. Each protocol lives in

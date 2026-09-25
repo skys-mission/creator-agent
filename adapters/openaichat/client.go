@@ -42,6 +42,9 @@ type Config struct {
 	// ReasoningKey pins the wire field name for reasoning content (non-standard gateways).
 	// Empty means the de-facto field scan inbound and the de-facto default outbound.
 	ReasoningKey string
+	// Reasoning is the thinking-depth control declaration (kind + supported levels + default);
+	// see contract.Reasoning. kind=effort maps to reasoning_effort on this protocol.
+	Reasoning contract.Reasoning
 }
 
 // Client implements adapters.ModelClient for the Chat Completions protocol.
@@ -94,11 +97,11 @@ func (c *Client) Name() string { return c.name }
 //
 // The returned channel must be drained until it closes.
 func (c *Client) Stream(ctx context.Context, req *contract.ModelRequest) (<-chan contract.Event, error) {
-	params, err := buildParams(c.cfg.ModelID, req, c.echoKey())
+	params, err := buildParams(c.cfg.ModelID, req, c.echoKey(), c.cfg.Reasoning)
 	if err != nil {
 		return nil, err
 	}
-	stream := c.api.Chat.Completions.NewStreaming(ctx, params)
+	stream := c.api.Chat.Completions.NewStreaming(ctx, params, reasoningRequestOptions(c.cfg.Reasoning)...)
 	if err := stream.Err(); err != nil {
 		return nil, fmt.Errorf("openaichat %s: %w", c.cfg.ModelID, err)
 	}

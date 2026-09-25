@@ -75,7 +75,7 @@ core/
   └── plugins/            Lua 插件宿主
       └── luavm/          VM 窄接口（lunar 实现，可整体替换）
 adapters/                 模型适配（协议分包：openaichat / …；唯一允许 import 厂商 SDK 的地方）
-contract/                 proto 生成类型 + 少量叶子助手（会话 ID、路径等）
+contract/                 领域模型 + 控制面 + 叶子助手（Model 配置对象、事件、会话、路径等）
 kernel/                   生命周期框架（保留，原样）
 ```
 
@@ -156,6 +156,12 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
   含多次模型调用，每次的历史与工具面都不同——执行输入（TUI→agent）与模型调用输入
   （loop→adapter）是两个生命周期。provider SDK 类型不得越过 adapters/ 边界。
 
+  配置对象是 **`contract.Model`**（Name / Protocol / BaseURL / ModelID / APIKey / Params），
+  中立领域模型而非适配层内部类型——TUI 只认 contract。TUI 用 `/model` 面板（二级菜单）创建 / 删除模型对象
+  对象（字段级校验 + `Model.Validate()`），落盘 `~/.creator/models.json`（0600；含密钥的
+  本地文件，绝不入 git、绝不打印——`Model.String()` 恒打码）；`adapters.New(contract.Model)`
+  按 Protocol 分发到协议子包。以协议为键，不以厂商为键。
+
 - **思维链回传（事实规范）**：OpenAI Chat Completions 生态**从未标准化**思维链字段，
   圈内流通四个名字（调研自三个开源实现 + vLLM 变更记录）：
 
@@ -177,9 +183,32 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
      `reasoning_content`；不认该字段的服务器会忽略它，需要思考进历史的网关则依赖它）；
      `off` = 思维链不上出站请求（端点拒收未知字段时用）。`Params.ReasoningKey` 可为非标准
      网关钉死字段名（收发双向）。
-  4. **请求侧"开思考"参数不发**（`reasoning_effort` 顶层字段 / `thinking.type` 等方言各异，
-     且会打破不支持的端点——如 gpt-5 系拒绝 `reasoning_effort: "none"`），留在 `Params`
-     后续讨论。
+  4. **请求侧"思考深度"控制（2026-09 调研，已实施到 `contract.Reasoning`）**：形状按能力
+     分三类，绝不混用一个字段：
+
+     | 类别 | 谁在用 | 传参形状 |
+     |---|---|---|
+     | 等级型 | OpenAI Chat Completions 顶层 `reasoning_effort`；OpenRouter `reasoning.effort`；Gemini `thinking_level`；Anthropic 新式 `output_config.effort` | 枚举，**每个模型自述支持子集** |
+     | 开关型 | DashScope/Qwen `enable_thinking`（布尔）；Ollama `think`（布尔）；GLM `thinking:{type:"enabled"/"disabled"}`（对象） | 二值开关，深度不可调 |
+     | 预算型 | Anthropic 旧式 `thinking.budget_tokens`；DashScope `thinking_budget`；Gemini `thinkingBudget` | 整数预算（`budget` kind 预留未实施） |
+
+     等级枚举并集 = `none / minimal / low / medium / high / xhigh / max`（OpenAI 官方文档
+     明确取值"依赖模型"，SDK 已定义 none..xhigh 常量；OpenRouter 同集合并按 max_tokens
+     百分比换算档位；Gemini 只有 minimal..high；强制思考的模型拒收 `none`——OpenRouter
+     models 端点以 `supported_efforts` + `mandatory` 自述能力）。
+
+     我们的规范：
+     1. 模型对象声明能力（`Params.Reasoning`：Kind + 等级子集 + 默认档），TUI 表单从预设
+        勾选支持级别再选默认等级（`kind=toggle` 则选默认开/关）。
+     2. `kind=effort` → `adapters/openaichat` 发顶层 `reasoning_effort: <默认档>`（"max"
+        这类 SDK 无常量的值原样落线）；`kind=none` 什么都不发——安全默认，乱发参数会被
+        不支持的端点 400 拒收。
+     3. `kind=toggle` 按方言映射（`Params.Reasoning.ToggleDialect` 钉死方言，模型对象里选）：
+        `enable_thinking` → 顶层 `"enable_thinking": true|false`（Qwen/百炼系）；
+        `think` → 顶层 `"think": true|false`（Ollama 系）；
+        `thinking-type` → `"thinking": {"type":"enabled"|"disabled"}`（GLM）。
+        实测断言见 `adapters/openaichat/client_test.go` 的 wire 测试。
+     4. 每请求改档位留给 loop→adapter 的 `ModelRequest` 扩展，暂不做。
 
   证据：MoonshotAI/kimi-code `providers/reasoning-key.ts`（KNOWN_REASONING_KEYS + 方言回传）、
   MiniMax-AI/minimax-code `model-provider/thinking.ts`（`thinking.type` / `reasoning_effort`）、
@@ -303,7 +332,7 @@ gRPC 需 grpc-web/Connect 桥——等 webui 立项再定；④ proto 工具链�
 | 项 | 处置 |
 |---|---|
 | `kernel/` | **原样保留**，当内核骨架 |
-| `cmd/creator-agent/tui/`（19.5k 行 + 30+ 测试） | **保留为产品交互前端**：注入的 `contract.Agent` 换本地直调实现（进程内 channel）；桌面场景走 stdio 协议 |
+| `cmd/creator-agent/tui/` | **保留为产品交互前端**（已砍到"输入框 + `/model`"极简外壳，见 [docs/tui-cut.md](docs/tui-cut.md)）：注入的 `contract.Agent` 换本地直调实现（进程内 channel）；桌面场景走 stdio 协议 |
 | `cmd/creator-agent/diag/` | 保留给 CLI/TUI；内核侧用 `log/slog` |
 | `docs/tui.md` | 保留（渲染不变量对保留代码继续有效） |
 | 测试三层纪律（mock 单测 / 集成 opt-in / 沙箱冒烟） | 保留，适用于新模块 |
