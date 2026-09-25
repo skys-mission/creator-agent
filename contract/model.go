@@ -147,19 +147,22 @@ var ReasoningToggleDialects = [...]ReasoningToggleDialect{
 // (Kind +, for effort models, the supported levels; for toggle models, the switch dialect) and
 // the default to use on every call.
 type Reasoning struct {
-	Kind          ReasoningKind          // how the endpoint accepts control, see ReasoningKind
-	ToggleDialect ReasoningToggleDialect // kind=toggle: which switch shape to send, see ReasoningToggleDialect
-	ToggleField   string                 // kind=toggle + custom dialect: wire field path (dots nest)
-	Efforts       []string               // kind=effort: supported presets (non-empty, no duplicates)
-	Default       string                 // kind=effort: one of Efforts; kind=toggle: ReasoningToggleOn/Off
+	Kind           ReasoningKind          // how the endpoint accepts control, see ReasoningKind
+	ToggleDialect  ReasoningToggleDialect // kind=toggle: which switch shape to send, see ReasoningToggleDialect
+	ToggleField    string                 // kind=toggle + custom dialect: wire field path (dots nest)
+	ToggleOnValue  string                 // kind=toggle + custom dialect: wire value when on (JSON literal, empty = omit)
+	ToggleOffValue string                 // kind=toggle + custom dialect: wire value when off (JSON literal, empty = omit)
+	Efforts        []string               // kind=effort: supported presets (non-empty, no duplicates)
+	Default        string                 // kind=effort: one of Efforts; kind=toggle: ReasoningToggleOn/Off
 }
 
 // Validate reports whether the declaration is internally consistent.
 func (r Reasoning) Validate() error {
 	switch r.Kind {
 	case ReasoningKindNone:
-		if len(r.Efforts) != 0 || r.Default != "" || r.ToggleDialect != "" || r.ToggleField != "" {
-			return fmt.Errorf("reasoning: kind %q must not set Efforts/Default/ToggleDialect/ToggleField", r.Kind)
+		if len(r.Efforts) != 0 || r.Default != "" || r.ToggleDialect != "" || r.ToggleField != "" ||
+			r.ToggleOnValue != "" || r.ToggleOffValue != "" {
+			return fmt.Errorf("reasoning: kind %q must not set Efforts/Default/ToggleDialect/ToggleField/Toggle values", r.Kind)
 		}
 	case ReasoningKindToggle:
 		if len(r.Efforts) != 0 {
@@ -175,11 +178,14 @@ func (r Reasoning) Validate() error {
 			if err := validateToggleField(r.ToggleField); err != nil {
 				return err
 			}
-		} else if r.ToggleField != "" {
-			return fmt.Errorf("reasoning: ToggleField is only set for the %q dialect", ToggleDialectCustom)
+			if err := validateToggleValues(r.ToggleOnValue, r.ToggleOffValue); err != nil {
+				return err
+			}
+		} else if r.ToggleField != "" || r.ToggleOnValue != "" || r.ToggleOffValue != "" {
+			return fmt.Errorf("reasoning: ToggleField/Toggle values are only set for the %q dialect", ToggleDialectCustom)
 		}
 	case ReasoningKindEffort:
-		if r.ToggleDialect != "" || r.ToggleField != "" {
+		if r.ToggleDialect != "" || r.ToggleField != "" || r.ToggleOnValue != "" || r.ToggleOffValue != "" {
 			return fmt.Errorf("reasoning: effort kind takes no toggle dialect")
 		}
 		if len(r.Efforts) == 0 {
@@ -214,6 +220,16 @@ func validateToggleField(field string) error {
 		if seg == "" {
 			return fmt.Errorf("reasoning: ToggleField %q has an empty path segment", field)
 		}
+	}
+	return nil
+}
+
+// validateToggleValues checks the custom switch's state values. An empty value means that state
+// omits the field entirely ("send only when on"); both empty would never send anything, which is
+// what the "not sent" dialect is for — so at least one must be set.
+func validateToggleValues(on, off string) error {
+	if on == "" && off == "" {
+		return fmt.Errorf("reasoning: custom toggle dialect needs at least one of ToggleOnValue/ToggleOffValue")
 	}
 	return nil
 }

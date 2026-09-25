@@ -460,32 +460,38 @@ func TestModelFormToggleDialectCustom(t *testing.T) {
 	injectKey(a, KeyRight) // switch on
 	f := &a.modelForm
 
-	// The custom slot is the last cycle entry; selecting it reveals the free-text field row.
+	// The custom slot is the last cycle entry; selecting it reveals the field row and the two
+	// state-value rows, pre-seeded with JSON booleans.
 	f.focus = formFieldToggleDialect
 	f.toggleDialectIdx = len(contract.ReasoningToggleDialects) - 1
 	injectKey(a, KeyRight) // -> custom
 	if f.dialect() != contract.ToggleDialectCustom {
 		t.Fatalf("dialect = %q, want custom", f.dialect())
 	}
-	found := false
-	for _, r := range formRows(f) {
-		if r == formFieldToggleCustom {
-			found = true
+	for _, want := range []modelFormField{formFieldToggleCustom, formFieldToggleOnValue, formFieldToggleOffValue} {
+		found := false
+		for _, r := range formRows(f) {
+			if r == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("rows = %v, want the %v row", formRows(f), want)
 		}
 	}
-	if !found {
-		t.Fatalf("rows = %v, want the custom switch field row", formRows(f))
-	}
 
-	// The field name feeds the declaration (dots nest: a.b -> {"a": {"b": ...}}).
+	// The field name feeds the declaration (dots nest: a.b -> {"a": {"b": ...}}), the values
+	// come seeded as real JSON booleans.
 	f.focus = formFieldToggleCustom
 	typeText(a, "a.b")
 	got := f.buildReasoning()
 	want := contract.Reasoning{
-		Kind:          contract.ReasoningKindToggle,
-		ToggleDialect: contract.ToggleDialectCustom,
-		ToggleField:   "a.b",
-		Default:       contract.ReasoningToggleOn,
+		Kind:           contract.ReasoningKindToggle,
+		ToggleDialect:  contract.ToggleDialectCustom,
+		ToggleField:    "a.b",
+		ToggleOnValue:  "true",
+		ToggleOffValue: "false",
+		Default:        contract.ReasoningToggleOn,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reasoning = %+v, want %+v", got, want)
@@ -494,21 +500,40 @@ func TestModelFormToggleDialectCustom(t *testing.T) {
 		t.Fatalf("custom declaration should validate: %v", err)
 	}
 
-	// An empty custom field must fail validation, not silently drop the switch the user asked for.
+	// Values are user-editable vocabularies (string enums, numbers) and may be cleared to mean
+	// "omit that state" — one value is enough.
+	f.toggleOnValue.SetValue("enabled")
+	if got := f.buildReasoning().ToggleOnValue; got != "enabled" {
+		t.Fatalf("ToggleOnValue = %q, want enabled", got)
+	}
+	f.toggleOffValue.SetValue("")
+	if err := f.buildReasoning().Validate(); err != nil {
+		t.Fatalf("on-only value should validate (off omits): %v", err)
+	}
+
+	// Both values empty sends nothing ever — that is the "not sent" dialect's job, so it must
+	// fail validation. An empty field name fails too: fail loud, never drop the switch silently.
+	f.toggleOnValue.SetValue("")
+	if err := f.buildReasoning().Validate(); err == nil {
+		t.Fatal("both values empty must fail validation")
+	}
+	f.toggleOnValue.SetValue("1")
 	f.toggleCustom = inputBuffer{}
 	if err := f.buildReasoning().Validate(); err == nil {
 		t.Fatal("empty custom field must fail validation")
 	}
 
-	// Leaving the custom slot hides the text row and keeps the focus on the choice row.
+	// Leaving the custom slot hides the custom rows and keeps the focus on the choice row.
 	f.focus = formFieldToggleDialect
 	injectKey(a, KeyRight) // custom wraps to "not sent"
 	if f.dialect() != "" {
 		t.Fatalf("dialect = %q, want wrap to not sent", f.dialect())
 	}
-	for _, r := range formRows(f) {
-		if r == formFieldToggleCustom {
-			t.Fatalf("rows = %v, want the custom row gone", formRows(f))
+	for _, gone := range []modelFormField{formFieldToggleCustom, formFieldToggleOnValue, formFieldToggleOffValue} {
+		for _, r := range formRows(f) {
+			if r == gone {
+				t.Fatalf("rows = %v, want the %v row gone", formRows(f), gone)
+			}
 		}
 	}
 	if f.focus != formFieldToggleDialect {

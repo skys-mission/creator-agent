@@ -171,30 +171,39 @@ func TestStreamEndToEnd(t *testing.T) {
 func TestStreamToggleDialectWire(t *testing.T) {
 	// kind=toggle must land on the wire in the exact shape of the pinned dialect — and must not
 	// smuggle in reasoning_effort (that is the effort kind's field). Every surveyed wire shape is
-	// pinned here, including the custom dialect's dotted-path nesting.
+	// pinned here, plus the custom dialect's full freedom: dotted-path nesting, JSON-literal
+	// values (bool/number/string), and omit-when-off.
 	cases := []struct {
-		name    string
-		dialect contract.ReasoningToggleDialect
-		field   string
-		def     string
-		wantKey string
-		wantVal any
+		name       string
+		dialect    contract.ReasoningToggleDialect
+		field      string
+		onVal      string
+		offVal     string
+		def        string
+		wantKey    string
+		wantVal    any
+		wantAbsent bool
 	}{
-		{"dashscope on", contract.ToggleDialectEnableThinking, "", contract.ReasoningToggleOn, "enable_thinking", true},
-		{"dashscope off", contract.ToggleDialectEnableThinking, "", contract.ReasoningToggleOff, "enable_thinking", false},
-		{"ollama on", contract.ToggleDialectThink, "", contract.ReasoningToggleOn, "think", true},
-		{"ollama off", contract.ToggleDialectThink, "", contract.ReasoningToggleOff, "think", false},
-		{"glm on", contract.ToggleDialectThinkingType, "", contract.ReasoningToggleOn, "thinking", map[string]any{"type": "enabled"}},
-		{"glm off", contract.ToggleDialectThinkingType, "", contract.ReasoningToggleOff, "thinking", map[string]any{"type": "disabled"}},
-		{"vllm qwen3 on", contract.ToggleDialectChatTemplateEnableThinking, "", contract.ReasoningToggleOn, "chat_template_kwargs", map[string]any{"enable_thinking": true}},
-		{"vllm qwen3 off", contract.ToggleDialectChatTemplateEnableThinking, "", contract.ReasoningToggleOff, "chat_template_kwargs", map[string]any{"enable_thinking": false}},
-		{"vllm granite on", contract.ToggleDialectChatTemplateThinking, "", contract.ReasoningToggleOn, "chat_template_kwargs", map[string]any{"thinking": true}},
-		{"vllm granite off", contract.ToggleDialectChatTemplateThinking, "", contract.ReasoningToggleOff, "chat_template_kwargs", map[string]any{"thinking": false}},
-		{"openrouter on", contract.ToggleDialectReasoningEnabled, "", contract.ReasoningToggleOn, "reasoning", map[string]any{"enabled": true}},
-		{"openrouter off", contract.ToggleDialectReasoningEnabled, "", contract.ReasoningToggleOff, "reasoning", map[string]any{"enabled": false}},
-		{"custom root on", contract.ToggleDialectCustom, "my_flag", contract.ReasoningToggleOn, "my_flag", true},
-		{"custom root off", contract.ToggleDialectCustom, "my_flag", contract.ReasoningToggleOff, "my_flag", false},
-		{"custom nested", contract.ToggleDialectCustom, "a.b", contract.ReasoningToggleOn, "a", map[string]any{"b": true}},
+		{name: "dashscope on", dialect: contract.ToggleDialectEnableThinking, def: contract.ReasoningToggleOn, wantKey: "enable_thinking", wantVal: true},
+		{name: "dashscope off", dialect: contract.ToggleDialectEnableThinking, def: contract.ReasoningToggleOff, wantKey: "enable_thinking", wantVal: false},
+		{name: "ollama on", dialect: contract.ToggleDialectThink, def: contract.ReasoningToggleOn, wantKey: "think", wantVal: true},
+		{name: "ollama off", dialect: contract.ToggleDialectThink, def: contract.ReasoningToggleOff, wantKey: "think", wantVal: false},
+		{name: "glm on", dialect: contract.ToggleDialectThinkingType, def: contract.ReasoningToggleOn, wantKey: "thinking", wantVal: map[string]any{"type": "enabled"}},
+		{name: "glm off", dialect: contract.ToggleDialectThinkingType, def: contract.ReasoningToggleOff, wantKey: "thinking", wantVal: map[string]any{"type": "disabled"}},
+		{name: "vllm qwen3 on", dialect: contract.ToggleDialectChatTemplateEnableThinking, def: contract.ReasoningToggleOn, wantKey: "chat_template_kwargs", wantVal: map[string]any{"enable_thinking": true}},
+		{name: "vllm qwen3 off", dialect: contract.ToggleDialectChatTemplateEnableThinking, def: contract.ReasoningToggleOff, wantKey: "chat_template_kwargs", wantVal: map[string]any{"enable_thinking": false}},
+		{name: "vllm granite on", dialect: contract.ToggleDialectChatTemplateThinking, def: contract.ReasoningToggleOn, wantKey: "chat_template_kwargs", wantVal: map[string]any{"thinking": true}},
+		{name: "vllm granite off", dialect: contract.ToggleDialectChatTemplateThinking, def: contract.ReasoningToggleOff, wantKey: "chat_template_kwargs", wantVal: map[string]any{"thinking": false}},
+		{name: "openrouter on", dialect: contract.ToggleDialectReasoningEnabled, def: contract.ReasoningToggleOn, wantKey: "reasoning", wantVal: map[string]any{"enabled": true}},
+		{name: "openrouter off", dialect: contract.ToggleDialectReasoningEnabled, def: contract.ReasoningToggleOff, wantKey: "reasoning", wantVal: map[string]any{"enabled": false}},
+		{name: "custom bool on", dialect: contract.ToggleDialectCustom, field: "my_flag", onVal: "true", offVal: "false", def: contract.ReasoningToggleOn, wantKey: "my_flag", wantVal: true},
+		{name: "custom bool off", dialect: contract.ToggleDialectCustom, field: "my_flag", onVal: "true", offVal: "false", def: contract.ReasoningToggleOff, wantKey: "my_flag", wantVal: false},
+		{name: "custom nested bool", dialect: contract.ToggleDialectCustom, field: "a.b", onVal: "true", offVal: "false", def: contract.ReasoningToggleOn, wantKey: "a", wantVal: map[string]any{"b": true}},
+		{name: "custom string value", dialect: contract.ToggleDialectCustom, field: "mode", onVal: "enabled", offVal: "disabled", def: contract.ReasoningToggleOn, wantKey: "mode", wantVal: "enabled"},
+		{name: "custom nested string value", dialect: contract.ToggleDialectCustom, field: "thinking.type", onVal: "adaptive", offVal: "disabled", def: contract.ReasoningToggleOn, wantKey: "thinking", wantVal: map[string]any{"type": "adaptive"}},
+		{name: "custom number value", dialect: contract.ToggleDialectCustom, field: "level", onVal: "1", offVal: "0", def: contract.ReasoningToggleOn, wantKey: "level", wantVal: float64(1)},
+		{name: "custom quoted string value", dialect: contract.ToggleDialectCustom, field: "flag", onVal: `"true"`, offVal: "false", def: contract.ReasoningToggleOn, wantKey: "flag", wantVal: "true"},
+		{name: "custom off omits field", dialect: contract.ToggleDialectCustom, field: "my_flag", onVal: "1", def: contract.ReasoningToggleOff, wantKey: "my_flag", wantAbsent: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +217,8 @@ func TestStreamToggleDialectWire(t *testing.T) {
 			c, err := New(Config{
 				ModelID: "test-model", APIKey: "k", BaseURL: srv.URL + "/v1",
 				Reasoning: contract.Reasoning{
-					Kind: contract.ReasoningKindToggle, ToggleDialect: tc.dialect, ToggleField: tc.field, Default: tc.def,
+					Kind: contract.ReasoningKindToggle, ToggleDialect: tc.dialect, ToggleField: tc.field,
+					ToggleOnValue: tc.onVal, ToggleOffValue: tc.offVal, Default: tc.def,
 				},
 			})
 			if err != nil {
@@ -224,7 +234,12 @@ func TestStreamToggleDialectWire(t *testing.T) {
 			if cap.broken {
 				t.Fatal("server could not decode the request body")
 			}
-			if got := cap.body[tc.wantKey]; !reflect.DeepEqual(got, tc.wantVal) {
+			got, present := cap.body[tc.wantKey]
+			if tc.wantAbsent {
+				if present {
+					t.Fatalf("wire %s = %#v, want the field omitted", tc.wantKey, got)
+				}
+			} else if !reflect.DeepEqual(got, tc.wantVal) {
 				t.Fatalf("wire %s = %#v, want %#v", tc.wantKey, got, tc.wantVal)
 			}
 			if _, ok := cap.body["reasoning_effort"]; ok {

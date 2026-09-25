@@ -163,7 +163,9 @@ var toggleWirePaths = map[contract.ReasoningToggleDialect]string{
 }
 
 // reasoningRequestOptions maps kind=toggle onto the gateway's switch field (see toggleWirePaths
-// for the surveyed shapes; ToggleDialectCustom sends a boolean at the user-named path).
+// for the surveyed shapes). ToggleDialectCustom sends the user-typed state value at the user-named
+// path, which also covers non-boolean vocabularies ("enabled"/"disabled", 1/0, …) and the
+// "send only when on" shape (an empty state value omits the field).
 // kind=effort needs no options (buildParams carries reasoning_effort); kind=none sends nothing.
 func reasoningRequestOptions(r contract.Reasoning) []option.RequestOption {
 	if r.Kind != contract.ReasoningKindToggle {
@@ -177,21 +179,44 @@ func reasoningRequestOptions(r contract.Reasoning) []option.RequestOption {
 		}
 		return []option.RequestOption{option.WithJSONSet("thinking", map[string]any{"type": typ})}
 	}
-	path := r.ToggleField
-	if r.ToggleDialect != contract.ToggleDialectCustom {
-		path = toggleWirePaths[r.ToggleDialect]
+	if r.ToggleDialect == contract.ToggleDialectCustom {
+		val := r.ToggleOffValue
+		if on {
+			val = r.ToggleOnValue
+		}
+		return literalFieldOptions(r.ToggleField, val)
 	}
-	return boolFieldOptions(path, on)
+	return jsonFieldOptions(toggleWirePaths[r.ToggleDialect], on)
 }
 
-// boolFieldOptions sends on/off as a boolean at the given dotted wire path. An empty or unknown
-// path sends nothing rather than a stray field: a wrong switch 400s some gateways.
-func boolFieldOptions(path string, on bool) []option.RequestOption {
+// literalFieldOptions sends the user-typed state value at the dotted wire path. An empty value
+// omits the field entirely for that state ("send only when on" gateways).
+func literalFieldOptions(path, value string) []option.RequestOption {
+	if value == "" {
+		return nil
+	}
+	return jsonFieldOptions(path, jsonLiteral(value))
+}
+
+// jsonLiteral interprets a user-typed wire value: JSON literals (true/false/null/numbers/
+// "quoted strings") land as JSON types, anything else is sent as a JSON string. This keeps
+// booleans real JSON booleans (what most gateways want) while letting string vocabularies
+// through unchanged.
+func jsonLiteral(s string) any {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err == nil {
+		return v
+	}
+	return s
+}
+
+// jsonFieldOptions sends v as JSON at the given dotted wire path ("a.b" nests under a). An empty
+// or unknown path sends nothing rather than a stray field: a wrong switch 400s some gateways.
+func jsonFieldOptions(path string, v any) []option.RequestOption {
 	if path == "" {
 		return nil
 	}
 	parts := strings.Split(path, ".")
-	v := any(on)
 	for i := len(parts) - 1; i > 0; i-- {
 		v = map[string]any{parts[i]: v}
 	}

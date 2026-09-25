@@ -225,10 +225,16 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
         | `chat-template-enable-thinking` | `"chat_template_kwargs": {"enable_thinking": true\|false}` | vLLM/SGLang 跑 Qwen3、Gemma |
         | `chat-template-thinking` | `"chat_template_kwargs": {"thinking": true\|false}` | vLLM 跑 Granite、DeepSeek-V3.1 |
         | `reasoning-enabled` | `"reasoning": {"enabled": true\|false}` | OpenRouter |
-        | 自定义 | `Params.Reasoning.ToggleField` 点号路径（`a.b` → `{"a":{"b":…}}`）按 `true\|false` 发 | 上表之外的新网关 |
+        | 自定义 | `ToggleField` 点号路径（`a.b` → `{"a":{"b":…}}`），值取 `ToggleOnValue`/`ToggleOffValue` | 上表之外的新网关 |
 
-        实测断言见 `adapters/openaichat/client_test.go` 的 wire 测试（含嵌套形状）。自定义
-        字段名留空时提交直接校验失败，不静默丢开关。
+        自定义把**值**也开放了（不止真/假）：值按 **JSON 字面量**解析（`true`/`false`/数字/
+        `"带引号"`/裸文本当字符串），于是字符串枚举（如 `{"type":"adaptive"/"disabled"}`——
+        MiniMax 实测形态）和数字（`1/0`）全能表达；**留空 = 该状态不发字段**（覆盖"只在开时
+        传"的网关）。UI 首次选自定义预填 `true/false`（只种子一次，不与用户编辑打架）；字段名
+        留空或两个值都留空时提交直接校验失败，不静默丢开关。实测断言见
+        `adapters/openaichat/client_test.go` 的 wire 测试（含嵌套、字符串/数字值、留空省略）。
+        至此单字段形状全覆盖；唯一剩的缺口是**多字段联动**（如 Anthropic 开思考必须同时给
+        预算数），归"预算型"kind 的活。
      5. 每请求改档位留给 loop→adapter 的 `ModelRequest` 扩展，暂不做。
 
   证据：MoonshotAI/kimi-code `packages/kosong/src/providers/reasoning-key.ts`

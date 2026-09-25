@@ -48,8 +48,10 @@ const (
 	formFieldEffortXhigh
 	formFieldEffortMax
 	formFieldReasoningDefault   // default level among the supported ones
-	formFieldToggleDialect      // on/off-only gateway switch shape ("not used" for effort models)
+	formFieldToggleDialect      // on/off-only gateway switch shape ("not sent" for effort models)
 	formFieldToggleCustom       // free-text wire field path for the custom switch dialect
+	formFieldToggleOnValue      // custom switch: wire value sent when on (JSON literal)
+	formFieldToggleOffValue     // custom switch: wire value sent when off (JSON literal)
 	formFieldReasoningKeyChoice // reasoning-content wire field: auto / preset / custom
 	formFieldReasoningKeyCustom // free-text wire field name for the custom preset
 	formFieldThinkingEcho       // thinking history round-trip
@@ -70,10 +72,13 @@ type modelFormState struct {
 	apiKey             inputBuffer
 	reasoningKeyCustom inputBuffer
 	toggleCustom       inputBuffer
+	toggleOnValue      inputBuffer
+	toggleOffValue     inputBuffer
 
 	protocolIdx      int  // index into protocolChoices()
 	switchOn         bool // the standalone thinking switch
-	toggleDialectIdx int  // 0 = not used; 1..n = contract.ReasoningToggleDialects[i-1]
+	toggleDialectIdx int  // 0 = not sent; 1..n = contract.ReasoningToggleDialects[i-1]
+	toggleValsSeeded bool // the custom switch's on/off values were seeded once; edits must not be fought
 	effortsOn        [len(contract.ReasoningEfforts)]bool
 	effortDefaultIdx int // index into contract.ReasoningEfforts; -1 = nothing checked
 	reasoningKeyIdx  int // index into reasoningKeyChoices(); 0 = auto (smart adaptation)
@@ -148,7 +153,7 @@ func reasoningRows(f *modelFormState) []modelFormField {
 		}
 		rows = append(rows, formFieldToggleDialect)
 		if f.dialect() == contract.ToggleDialectCustom {
-			rows = append(rows, formFieldToggleCustom)
+			rows = append(rows, formFieldToggleCustom, formFieldToggleOnValue, formFieldToggleOffValue)
 		}
 	}
 	rows = append(rows, formFieldReasoningKeyChoice)
@@ -198,6 +203,10 @@ func (f *modelFormState) textBuf(k modelFormField) *inputBuffer {
 		return &f.reasoningKeyCustom
 	case formFieldToggleCustom:
 		return &f.toggleCustom
+	case formFieldToggleOnValue:
+		return &f.toggleOnValue
+	case formFieldToggleOffValue:
+		return &f.toggleOffValue
 	}
 	return nil
 }
@@ -251,9 +260,12 @@ func (f *modelFormState) buildReasoning() contract.Reasoning {
 			Default:       def,
 		}
 		if d == contract.ToggleDialectCustom {
-			// An empty field fails Reasoning.Validate() on submit — fail loud rather than
-			// silently dropping the switch the user asked for.
+			// An empty field (or both values empty) fails Reasoning.Validate() on submit — fail
+			// loud rather than silently dropping the switch the user asked for. A value left
+			// empty on purpose means "omit this state's field entirely".
 			r.ToggleField = strings.TrimSpace(f.toggleCustom.Value())
+			r.ToggleOnValue = strings.TrimSpace(f.toggleOnValue.Value())
+			r.ToggleOffValue = strings.TrimSpace(f.toggleOffValue.Value())
 		}
 		return r
 	}
@@ -414,8 +426,10 @@ func cycleChoice(f *modelFormState, delta int) {
 			f.effortsOn = [len(contract.ReasoningEfforts)]bool{}
 			f.effortDefaultIdx = -1
 		}
-		if f.dialect() != contract.ToggleDialectCustom {
-			// The custom text row disappears; keep the focus on the choice row.
+		if f.dialect() == contract.ToggleDialectCustom {
+			f.ensureToggleVals()
+		} else {
+			// The custom rows disappear; keep the focus on the choice row.
 			f.focus = formFieldToggleDialect
 		}
 	case formFieldReasoningDefault:
@@ -442,6 +456,18 @@ func cycleChoice(f *modelFormState, delta int) {
 			f.normalizeEfforts()
 		}
 	}
+}
+
+// ensureToggleVals seeds the custom switch's on/off values the first time the custom dialect is
+// chosen: JSON booleans are the common case. Seeding happens once per form so deliberate edits
+// (including clearing a value to mean "omit that state") are never fought.
+func (f *modelFormState) ensureToggleVals() {
+	if f.toggleValsSeeded {
+		return
+	}
+	f.toggleValsSeeded = true
+	f.toggleOnValue.SetValue("true")
+	f.toggleOffValue.SetValue("false")
 }
 
 // ensureEffortDefaults seeds a sensible supported set the first time the thinking switch turns

@@ -140,8 +140,9 @@ func reasoningSummaryRows(p contract.Params) []struct{ label, value string } {
 	case contract.ReasoningKindToggle:
 		dialect := dialectValueLabel(p.Reasoning.ToggleDialect)
 		if p.Reasoning.ToggleDialect == contract.ToggleDialectCustom {
-			// The custom switch shows the user-named wire field — that is what must match the gateway.
-			dialect += " " + orDash(p.Reasoning.ToggleField)
+			// The custom switch shows the user-named wire field and its state values — that is
+			// what must match the gateway.
+			dialect += " " + dialectWireName(p.Reasoning)
 		}
 		rows = append(rows, struct{ label, value string }{
 			i18n.T("model_form.field.toggle_dialect"), dialect,
@@ -189,6 +190,10 @@ func formLabel(k modelFormField) string {
 		return i18n.T("model_form.field.toggle_dialect")
 	case formFieldToggleCustom:
 		return i18n.T("model_form.field.toggle_custom")
+	case formFieldToggleOnValue:
+		return i18n.T("model_form.field.toggle_on_val")
+	case formFieldToggleOffValue:
+		return i18n.T("model_form.field.toggle_off_val")
 	case formFieldReasoningKeyChoice:
 		return i18n.T("model_form.field.reasoning_key")
 	case formFieldReasoningKeyCustom:
@@ -217,6 +222,10 @@ func formHint(k modelFormField) string {
 		return i18n.T("model_form.hint.reasoning_key_custom")
 	case formFieldToggleCustom:
 		return i18n.T("model_form.hint.toggle_custom")
+	case formFieldToggleOnValue:
+		return i18n.T("model_form.hint.toggle_on_val")
+	case formFieldToggleOffValue:
+		return i18n.T("model_form.hint.toggle_off_val")
 	}
 	return ""
 }
@@ -332,10 +341,11 @@ func dialectValueLabel(d contract.ReasoningToggleDialect) string {
 }
 
 // dialectWireName names the toggle dialect as it lands on the wire: the custom dialect shows the
-// user-named field (that is what must match the gateway), presets show their wire shape.
+// user-named field with its on/off values (that is what must match the gateway), presets show
+// their wire shape. An empty state value renders as "-" = that state omits the field.
 func dialectWireName(r contract.Reasoning) string {
 	if r.ToggleDialect == contract.ToggleDialectCustom && r.ToggleField != "" {
-		return r.ToggleField
+		return r.ToggleField + "=" + orDash(r.ToggleOnValue) + "/" + orDash(r.ToggleOffValue)
 	}
 	return string(r.ToggleDialect)
 }
