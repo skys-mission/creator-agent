@@ -37,8 +37,23 @@ func typeText(a *App, s string) {
 	}
 }
 
+// openReasoning walks to the "reasoning settings" entry row and opens the second-level page.
+func openReasoning(t *testing.T, a *App) {
+	t.Helper()
+	for !a.modelForm.reasoning && a.modelForm.focus != formFieldReasoningEntry {
+		injectKey(a, KeyTab)
+	}
+	if a.modelForm.focus != formFieldReasoningEntry {
+		t.Fatalf("focus = %v, want the reasoning entry row", a.modelForm.focus)
+	}
+	injectKey(a, KeyEnter)
+	if !a.modelForm.reasoning {
+		t.Fatal("Enter on the entry row did not open the reasoning page")
+	}
+}
+
 // fillModel walks the form top-to-bottom filling every field with the values of the walkthrough
-// test model (name, base URL, model ID, API key, thinking echo off, reasoning key).
+// test model: identity fields, then the reasoning page (wire field "reasoning", echo off).
 func fillModel(a *App) {
 	typeText(a, "my-gpt")
 	injectKey(a, KeyTab) // -> protocol (left at the only choice)
@@ -48,10 +63,14 @@ func fillModel(a *App) {
 	typeText(a, "m1")
 	injectKey(a, KeyTab) // -> API key
 	typeText(a, "sk-test-abcd1234")
-	injectKey(a, KeyTab) // -> thinking echo
+	injectKey(a, KeyTab) // -> reasoning entry
+	injectKey(a, KeyEnter)
+	injectKey(a, KeyTab) // -> reasoning field choice
 	injectKey(a, KeyRight)
-	injectKey(a, KeyTab) // -> reasoning key
-	typeText(a, "reasoning")
+	injectKey(a, KeyRight)
+	injectKey(a, KeyRight) // auto -> reasoning_content -> reasoning_details -> reasoning
+	injectKey(a, KeyTab)   // -> thinking echo
+	injectKey(a, KeyRight) // on -> off
 }
 
 func TestModelFormRendersFields(t *testing.T) {
@@ -244,9 +263,15 @@ func TestModelFormChoiceFieldsCycle(t *testing.T) {
 	if a.modelForm.protocolIdx != 0 {
 		t.Fatalf("protocol index = %d, want 0 (single choice wraps)", a.modelForm.protocolIdx)
 	}
-	injectKey(a, KeyTab) // -> base URL
-	injectKey(a, KeyTab) // -> model ID
-	injectKey(a, KeyTab) // -> API key
+
+	openReasoning(t, a)
+	// Rows with the switch off: switch, reasoning field, thinking echo.
+	if got := formRows(&a.modelForm); !reflect.DeepEqual(got, []modelFormField{
+		formFieldThinkingSwitch, formFieldReasoningKeyChoice, formFieldThinkingEcho,
+	}) {
+		t.Fatalf("reasoning rows (switch off) = %v", got)
+	}
+	injectKey(a, KeyTab)
 	injectKey(a, KeyTab) // -> thinking echo
 	if a.modelForm.echoIdx != 0 {
 		t.Fatalf("echo index = %d, want 0 (default on)", a.modelForm.echoIdx)
@@ -261,27 +286,14 @@ func TestModelFormChoiceFieldsCycle(t *testing.T) {
 	}
 }
 
-// tabToKind walks from the name row to the reasoning-kind row (name -> ... -> kind).
-func tabToKind(t *testing.T, a *App) {
-	t.Helper()
-	for i := 0; i < 7; i++ { // name, protocol, baseURL, modelID, apiKey, echo, reasoningKey
-		injectKey(a, KeyTab)
-	}
-	if a.modelForm.focus != formFieldReasoningKind {
-		t.Fatalf("focus = %v, want reasoning-kind row", a.modelForm.focus)
-	}
-}
-
-func TestModelFormEffortRowsSeededAndToggled(t *testing.T) {
+func TestModelFormSwitchRevealsLevelRows(t *testing.T) {
 	a, sim := newModelFormApp(t)
 	openForm(t, a)
-	tabToKind(t, a)
-	injectKey(a, KeyRight) // none -> toggle
-	injectKey(a, KeyRight) // toggle -> effort
-	if got := a.modelForm.kind(); got != contract.ReasoningKindEffort {
-		t.Fatalf("kind = %q, want effort", got)
+	openReasoning(t, a)
+	injectKey(a, KeyRight) // switch off -> on (seeds low/medium/high, default medium)
+	if !a.modelForm.switchOn {
+		t.Fatal("Right on the switch row did not turn the switch on")
 	}
-	// First entry into the effort kind seeds low/medium/high with default medium.
 	want := contract.Reasoning{
 		Kind: contract.ReasoningKindEffort,
 		Efforts: []string{
@@ -291,6 +303,10 @@ func TestModelFormEffortRowsSeededAndToggled(t *testing.T) {
 	}
 	if got := a.modelForm.buildReasoning(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("seeded reasoning = %+v, want %+v", got, want)
+	}
+	// Rows grow to switch + 7 presets + default + dialect + wire field + echo.
+	if got := len(formRows(&a.modelForm)); got != 12 {
+		t.Fatalf("reasoning rows (switch on) = %d, want 12", got)
 	}
 
 	// The rows render as checkable presets (never any key material).
@@ -305,7 +321,7 @@ func TestModelFormEffortRowsSeededAndToggled(t *testing.T) {
 		}
 	}
 
-	// Check "max": Tab from kind lands on the "none" row, then walk to "max".
+	// Check "max": Tab from the switch lands on the "none" row, then walk to "max".
 	for i := 0; i < 7; i++ {
 		injectKey(a, KeyTab)
 	}
@@ -322,10 +338,9 @@ func TestModelFormEffortRowsSeededAndToggled(t *testing.T) {
 func TestModelFormEffortDefaultFollowsChecks(t *testing.T) {
 	a, _ := newModelFormApp(t)
 	openForm(t, a)
-	tabToKind(t, a)
-	injectKey(a, KeyRight)
-	injectKey(a, KeyRight) // -> effort kind (low/medium/high checked, default medium)
-	// Walk to the "medium" row (rows after kind: none, minimal, low, medium) and uncheck it.
+	openReasoning(t, a)
+	injectKey(a, KeyRight) // switch on -> seeds low/medium/high, default medium
+	// Rows after the switch: none, minimal, low, medium — walk to "medium" and uncheck it.
 	for i := 0; i < 4; i++ {
 		injectKey(a, KeyTab)
 	}
@@ -334,51 +349,63 @@ func TestModelFormEffortDefaultFollowsChecks(t *testing.T) {
 	if got.Default != contract.ReasoningEffortLow {
 		t.Fatalf("default = %q, want fall back to lowest supported (low)", got.Default)
 	}
-	// Uncheck everything: the default clears and Validate refuses to advance.
+	// Uncheck everything: no level control is declared (fail-safe: nothing is sent), and the
+	// default row gives way to the switch-dialect row.
 	for _, row := range []modelFormField{
 		formFieldEffortLow, formFieldEffortHigh,
 	} {
 		a.modelForm.focus = row
 		injectKey(a, KeyRight)
 	}
-	if got := a.modelForm.buildReasoning(); got.Default != "" {
-		t.Fatalf("default = %q, want empty with nothing checked", got.Default)
+	if got := a.modelForm.buildReasoning(); !reflect.DeepEqual(got, contract.Reasoning{}) {
+		t.Fatalf("reasoning = %+v, want empty declaration with nothing checked", got)
 	}
-	// Fill the required model ID, then Enter must refuse: no supported level checked.
-	a.modelForm.focus = formFieldModelID
-	typeText(a, "m1")
-	injectKey(a, KeyEnter)
-	if a.modelForm.confirm {
-		t.Fatal("Enter advanced to confirm with an empty supported set")
+	rows := formRows(&a.modelForm)
+	for _, r := range rows {
+		if r == formFieldReasoningDefault {
+			t.Fatalf("default-level row still visible with nothing checked: %v", rows)
+		}
 	}
-	if a.modelForm.err == "" {
-		t.Fatal("no validation error for an empty supported set")
+	found := false
+	for _, r := range rows {
+		if r == formFieldToggleDialect {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("switch-dialect row missing with nothing checked: %v", rows)
 	}
 }
 
-func TestModelFormToggleKindRows(t *testing.T) {
+func TestModelFormToggleDialectExclusive(t *testing.T) {
 	a, _ := newModelFormApp(t)
 	openForm(t, a)
-	tabToKind(t, a)
-	injectKey(a, KeyRight) // none -> toggle
-	rows := formRows(&a.modelForm)
-	if len(rows) != 10 { // base 7 + kind + toggle default + dialect
-		t.Fatalf("rows = %v, want 10 rows for the toggle kind", rows)
+	openReasoning(t, a)
+	injectKey(a, KeyRight) // switch on -> seeds low/medium/high
+
+	// Walk to the dialect row (switch, 7 presets, default, dialect) and choose a gateway shape:
+	// the levels clear — an on/off-only model has none.
+	for i := 0; i < 9; i++ {
+		injectKey(a, KeyTab)
 	}
-	injectKey(a, KeyTab) // -> toggle default row
-	injectKey(a, KeyRight)
+	if a.modelForm.focus != formFieldToggleDialect {
+		t.Fatalf("focus = %v, want the switch-dialect row", a.modelForm.focus)
+	}
+	injectKey(a, KeyRight) // not used -> enable_thinking
 	got := a.modelForm.buildReasoning()
 	want := contract.Reasoning{
 		Kind:          contract.ReasoningKindToggle,
 		ToggleDialect: contract.ToggleDialectEnableThinking,
-		Default:       contract.ReasoningToggleOff,
+		Default:       contract.ReasoningToggleOn,
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("reasoning = %+v, want %+v", got, want)
+		t.Fatalf("reasoning = %+v, want %+v (dialect choice must clear the levels)", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("toggle declaration should validate: %v", err)
 	}
 
-	// The dialect row cycles through the three gateway switch shapes.
-	injectKey(a, KeyTab) // -> dialect row
+	// The dialect row cycles through the three gateway switch shapes and back to "not used".
 	injectKey(a, KeyRight)
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectThink {
 		t.Fatalf("dialect = %q, want think (Ollama)", got)
@@ -387,12 +414,121 @@ func TestModelFormToggleKindRows(t *testing.T) {
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectThinkingType {
 		t.Fatalf("dialect = %q, want thinking-type (GLM)", got)
 	}
-	injectKey(a, KeyRight) // wraps back
+	injectKey(a, KeyRight) // wraps through "not used"
+	if got := a.modelForm.dialect(); got != "" {
+		t.Fatalf("dialect = %q, want wrap to not used", got)
+	}
+	if got := a.modelForm.buildReasoning(); !reflect.DeepEqual(got, contract.Reasoning{}) {
+		t.Fatalf("reasoning = %+v, want silent declaration at not used", got)
+	}
+	injectKey(a, KeyRight)
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectEnableThinking {
 		t.Fatalf("dialect = %q, want wrap to enable_thinking", got)
 	}
-	if err := a.modelForm.buildReasoning().Validate(); err != nil {
-		t.Fatalf("toggle declaration should validate: %v", err)
+
+	// Checking a level flips the capability back and resets the dialect to "not used".
+	a.modelForm.focus = formFieldEffortMedium
+	injectKey(a, KeyRight)
+	if got := a.modelForm.dialect(); got != "" {
+		t.Fatalf("dialect = %q, want reset to not used when levels are checked", got)
+	}
+	if got := a.modelForm.buildReasoning().Kind; got != contract.ReasoningKindEffort {
+		t.Fatalf("kind = %q, want effort after checking a level", got)
+	}
+}
+
+func TestModelFormSwitchOffSemantics(t *testing.T) {
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a)
+	f := &a.modelForm
+
+	// On/off-only model with the switch off: the disable is sent explicitly in the dialect.
+	f.toggleDialectIdx = 1 // enable_thinking
+	got := f.buildReasoning()
+	want := contract.Reasoning{
+		Kind:          contract.ReasoningKindToggle,
+		ToggleDialect: contract.ToggleDialectEnableThinking,
+		Default:       contract.ReasoningToggleOff,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("toggle-off reasoning = %+v, want %+v", got, want)
+	}
+
+	// Effort model that accepts explicit off ("none" checked): the switch off sends "none".
+	f.toggleDialectIdx = 0
+	f.effortsOn[effortIndex(contract.ReasoningEffortNone)] = true
+	f.effortsOn[effortIndex(contract.ReasoningEffortLow)] = true
+	f.normalizeEfforts()
+	got = f.buildReasoning()
+	want = contract.Reasoning{
+		Kind:    contract.ReasoningKindEffort,
+		Efforts: []string{contract.ReasoningEffortNone, contract.ReasoningEffortLow},
+		Default: contract.ReasoningEffortNone,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("effort-off reasoning = %+v, want %+v", got, want)
+	}
+
+	// Effort model with no off level: sending any level would turn thinking on, so the
+	// adapters stay silent instead.
+	f.effortsOn[effortIndex(contract.ReasoningEffortNone)] = false
+	f.normalizeEfforts()
+	if got = f.buildReasoning(); !reflect.DeepEqual(got, contract.Reasoning{}) {
+		t.Fatalf("reasoning = %+v, want silent declaration", got)
+	}
+}
+
+func TestModelFormReasoningKeyPresets(t *testing.T) {
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a)
+	injectKey(a, KeyTab) // -> reasoning field choice
+
+	wantKeys := []string{"", "reasoning_content", "reasoning_details", "reasoning", "reasoning_text"}
+	for i, want := range wantKeys {
+		if got := a.modelForm.build().Params.ReasoningKey; got != want {
+			t.Fatalf("cycle %d: ReasoningKey = %q, want %q", i, got, want)
+		}
+		injectKey(a, KeyRight)
+	}
+	// The last preset is the custom entry: its text row appears and feeds the wire key.
+	if a.modelForm.reasoningKeyIdx != reasoningKeyCustomIdx {
+		t.Fatalf("reasoningKeyIdx = %d, want the custom preset", a.modelForm.reasoningKeyIdx)
+	}
+	if rows := formRows(&a.modelForm); rows[2] != formFieldReasoningKeyCustom {
+		t.Fatalf("rows = %v, want the custom key row after the choice row", rows)
+	}
+	injectKey(a, KeyTab) // -> custom text row
+	typeText(a, "my_think")
+	if got := a.modelForm.build().Params.ReasoningKey; got != "my_think" {
+		t.Fatalf("ReasoningKey = %q, want my_think", got)
+	}
+	// Leaving the custom preset hides the text row again and keeps the focus on the choice row.
+	a.modelForm.focus = formFieldReasoningKeyChoice
+	injectKey(a, KeyLeft) // custom -> reasoning_text
+	if got := formRows(&a.modelForm); len(got) != 3 || got[1] != formFieldReasoningKeyChoice {
+		t.Fatalf("rows = %v, want the custom row gone", got)
+	}
+	if a.modelForm.focus != formFieldReasoningKeyChoice {
+		t.Fatalf("focus = %v, want the choice row", a.modelForm.focus)
+	}
+}
+
+func TestModelFormReasoningPageEscBack(t *testing.T) {
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a)
+	injectKey(a, KeyEsc)
+	if !a.modelForm.open || a.modelForm.reasoning {
+		t.Fatalf("Esc left the dialog (open=%v reasoning=%v)", a.modelForm.open, a.modelForm.reasoning)
+	}
+	if a.modelForm.focus != formFieldReasoningEntry {
+		t.Fatalf("focus = %v, want the entry row after Esc", a.modelForm.focus)
+	}
+	injectKey(a, KeyEsc)
+	if a.modelForm.open {
+		t.Fatal("Esc on the edit page did not close the form")
 	}
 }
 
@@ -401,10 +537,9 @@ func TestModelFormConfirmShowsReasoningSummary(t *testing.T) {
 	openForm(t, a)
 	a.modelForm.focus = formFieldModelID
 	typeText(a, "m1")
-	tabToKind(t, a)
-	injectKey(a, KeyRight)
-	injectKey(a, KeyRight) // -> effort kind (low, medium, high / default medium)
-	injectKey(a, KeyEnter)
+	openReasoning(t, a)
+	injectKey(a, KeyRight) // switch on -> low, medium, high / default medium
+	injectKey(a, KeyEnter) // reasoning page Enter advances to the confirm page
 	if !a.modelForm.confirm {
 		t.Fatalf("did not reach confirm page (err=%q)", a.modelForm.err)
 	}
@@ -415,6 +550,8 @@ func TestModelFormConfirmShowsReasoningSummary(t *testing.T) {
 		i18n.T("model_form.value.kind.effort"),
 		"low, medium, high",
 		contract.ReasoningEffortMedium,
+		i18n.T("model_form.field.reasoning_key"),
+		i18n.T("model_form.value.key.auto"),
 	} {
 		if !strings.Contains(dump, want) {
 			t.Fatalf("confirm page missing %q:\n%s", want, dump)

@@ -13,9 +13,16 @@ import (
 // reuses the wizard's field vocabulary (one inputBuffer per text field) but lives on App as a
 // full-screen overlay, so it opens from the /model menu at any time.
 //
-// The row list is dynamic: the reasoning-control rows depend on the capability kind chosen on
-// the form itself (none / on-off only / effort levels — see contract.ReasoningKind). Field IDs
-// are identities, not positions; formRows(f) is the single source of layout order.
+// The dialog has three pages:
+//
+//	edit      — identity fields + one "reasoning settings" entry row
+//	reasoning — the second-level settings page (thinking switch, levels, dialect, wire key, echo)
+//	confirm   — review + create
+//
+// The thinking switch is a plain on/off control (never a kind cycle): turning it on reveals the
+// allowed levels and the default level; the switch dialect row models the rare on/off-only
+// gateways. Supported levels and the switch dialect are mutually exclusive capabilities — setting
+// one clears the other — so the stored declaration can never contradict the form.
 //
 // Layout contract with model_form_view.go: the view only reads this state; all mutation happens
 // here in the event-loop goroutine (App state discipline).
@@ -29,41 +36,46 @@ const (
 	formFieldBaseURL
 	formFieldModelID
 	formFieldAPIKey
-	formFieldThinkingEcho
-	formFieldReasoningKey
-	formFieldReasoningKind
-	formFieldReasoningToggle // kind=toggle: default on/off
-	formFieldToggleDialect   // kind=toggle: which gateway switch shape to send
-	formFieldEffortNone      // kind=effort: per-preset "supported" toggles
-	formFieldEffortMinimal   //   (one row per contract.ReasoningEfforts entry,
-	formFieldEffortLow       //    order and count must match)
+	formFieldReasoningEntry // edit page: opens the reasoning page (shows a one-line summary)
+
+	// Reasoning page.
+	formFieldThinkingSwitch // standalone thinking on/off
+	formFieldEffortNone     // per-preset "supported" toggles
+	formFieldEffortMinimal  //   (one row per contract.ReasoningEfforts entry,
+	formFieldEffortLow      //    order and count must match)
 	formFieldEffortMedium
 	formFieldEffortHigh
 	formFieldEffortXhigh
 	formFieldEffortMax
-	formFieldReasoningDefault // kind=effort: default level among the supported ones
+	formFieldReasoningDefault   // default level among the supported ones
+	formFieldToggleDialect      // on/off-only gateway switch shape ("not used" for effort models)
+	formFieldReasoningKeyChoice // reasoning-content wire field: auto / preset / custom
+	formFieldReasoningKeyCustom // free-text wire field name for the custom preset
+	formFieldThinkingEcho       // thinking history round-trip
 )
 
 // modelFormState is the create-model overlay state.
 type modelFormState struct {
-	open    bool
-	confirm bool // true = the confirm page is showing
-	focus   modelFormField
-	err     string // inline validation/save error; cleared on the next field move
+	open          bool
+	confirm       bool // true = the confirm page is showing
+	reasoning     bool // true = the reasoning page is showing (edit page underneath)
+	focus         modelFormField
+	err           string // inline validation/save error; cleared on the next field move
+	effortsSeeded bool   // the effort presets were seeded once; off/on cycles must not re-seed
 
-	name         inputBuffer
-	baseURL      inputBuffer
-	modelID      inputBuffer
-	apiKey       inputBuffer
-	reasoningKey inputBuffer
+	name               inputBuffer
+	baseURL            inputBuffer
+	modelID            inputBuffer
+	apiKey             inputBuffer
+	reasoningKeyCustom inputBuffer
 
-	protocolIdx      int // index into protocolChoices()
-	echoIdx          int // index into echoChoices(); 0 = on (the default)
-	kindIdx          int // index into kindChoices(); 0 = none (the fail-safe default)
-	toggleIdx        int // index into toggleChoices(); 0 = on
-	toggleDialectIdx int // index into contract.ReasoningToggleDialects; 0 = enable_thinking
+	protocolIdx      int  // index into protocolChoices()
+	switchOn         bool // the standalone thinking switch
+	toggleDialectIdx int  // 0 = not used; 1..n = contract.ReasoningToggleDialects[i-1]
 	effortsOn        [len(contract.ReasoningEfforts)]bool
 	effortDefaultIdx int // index into contract.ReasoningEfforts; -1 = nothing checked
+	reasoningKeyIdx  int // index into reasoningKeyChoices(); 0 = auto (smart adaptation)
+	echoIdx          int // index into echoChoices(); 0 = on (the default)
 }
 
 // protocolChoices returns the selectable wire protocols. Only implemented protocols are offered:
@@ -77,20 +89,21 @@ func echoChoices() []contract.ThinkingEchoMode {
 	return []contract.ThinkingEchoMode{contract.ThinkingEchoOn, contract.ThinkingEchoOff}
 }
 
-// kindChoices returns the reasoning-control kinds in cycle order. none leads because it is the
-// fail-safe default: a stray thinking parameter is how you 400 a model that takes none.
-func kindChoices() []contract.ReasoningKind {
-	return []contract.ReasoningKind{contract.ReasoningKindNone, contract.ReasoningKindToggle, contract.ReasoningKindEffort}
+// reasoningKeyChoices returns the reasoning-content wire-field presets in cycle order. The first
+// entry ("" = auto) is the recommended default: smart adaptation scans every known dialect
+// inbound and echoes the dialect the endpoint spoke. The rest pin one wire name; the last is the
+// custom free-text entry.
+func reasoningKeyChoices() []string {
+	return []string{"", "reasoning_content", "reasoning_details", "reasoning", "reasoning_text", "-"}
 }
 
-// toggleChoices returns the on/off values for kind=toggle in cycle order.
-func toggleChoices() []string {
-	return []string{contract.ReasoningToggleOn, contract.ReasoningToggleOff}
-}
+// reasoningKeyCustomIdx is the index of the custom (free-text) preset in reasoningKeyChoices().
+const reasoningKeyCustomIdx = 5
 
 // openModelForm opens the create-model dialog with a fresh (defaulted) form.
 func openModelForm(a *App) {
-	a.modelForm = modelFormState{echoIdx: 0, open: true, effortDefaultIdx: -1}
+	a.modelForm = modelFormState{open: true, effortDefaultIdx: -1}
+	a.modelForm.focus = formFieldName
 	a.forceRender = true
 }
 
@@ -98,11 +111,6 @@ func openModelForm(a *App) {
 func closeModelForm(a *App) {
 	a.modelForm = modelFormState{}
 	a.forceRender = true
-}
-
-// kind returns the currently selected reasoning-control kind.
-func (f *modelFormState) kind() contract.ReasoningKind {
-	return kindChoices()[f.kindIdx]
 }
 
 // effortIdx maps an effort row to its contract.ReasoningEfforts index.
@@ -113,30 +121,55 @@ func (f modelFormField) effortIdx() (int, bool) {
 	return 0, false
 }
 
-// formRows returns the visible rows, top to bottom, for the current form state. The reasoning
-// rows appear only for the selected kind — a toggle model has no levels to check off.
+// formRows returns the visible rows, top to bottom, for the current page and form state. The
+// capability rows (levels, default level, switch dialect) appear only while the thinking switch
+// is on — flipping it on is what reveals them.
 func formRows(f *modelFormState) []modelFormField {
-	rows := []modelFormField{
-		formFieldName, formFieldProtocol, formFieldBaseURL, formFieldModelID, formFieldAPIKey,
-		formFieldThinkingEcho, formFieldReasoningKey, formFieldReasoningKind,
+	if f.reasoning {
+		return reasoningRows(f)
 	}
-	switch f.kind() {
-	case contract.ReasoningKindToggle:
-		rows = append(rows, formFieldReasoningToggle, formFieldToggleDialect)
-	case contract.ReasoningKindEffort:
+	return []modelFormField{
+		formFieldName, formFieldProtocol, formFieldBaseURL, formFieldModelID, formFieldAPIKey,
+		formFieldReasoningEntry,
+	}
+}
+
+// reasoningRows returns the rows of the reasoning settings page.
+func reasoningRows(f *modelFormState) []modelFormField {
+	rows := []modelFormField{formFieldThinkingSwitch}
+	if f.switchOn {
 		for i := range contract.ReasoningEfforts {
 			rows = append(rows, formFieldEffortNone+modelFormField(i))
 		}
-		rows = append(rows, formFieldReasoningDefault)
+		if f.anyEffort() {
+			rows = append(rows, formFieldReasoningDefault)
+		}
+		rows = append(rows, formFieldToggleDialect)
 	}
+	rows = append(rows, formFieldReasoningKeyChoice)
+	if f.reasoningKeyIdx == reasoningKeyCustomIdx {
+		rows = append(rows, formFieldReasoningKeyCustom)
+	}
+	rows = append(rows, formFieldThinkingEcho)
 	return rows
+}
+
+// anyEffort reports whether at least one supported level is checked.
+func (f *modelFormState) anyEffort() bool {
+	for _, on := range f.effortsOn {
+		if on {
+			return true
+		}
+	}
+	return false
 }
 
 // isText reports whether the field is a free-text field (vs. a cycle-choice field).
 func (f modelFormField) isText() bool {
 	switch f {
-	case formFieldProtocol, formFieldThinkingEcho, formFieldReasoningKind,
-		formFieldReasoningToggle, formFieldToggleDialect, formFieldReasoningDefault:
+	case formFieldProtocol, formFieldThinkingSwitch, formFieldReasoningDefault,
+		formFieldToggleDialect, formFieldReasoningKeyChoice, formFieldThinkingEcho,
+		formFieldReasoningEntry:
 		return false
 	}
 	if _, ok := f.effortIdx(); ok {
@@ -156,32 +189,60 @@ func (f *modelFormState) textBuf(k modelFormField) *inputBuffer {
 		return &f.modelID
 	case formFieldAPIKey:
 		return &f.apiKey
-	case formFieldReasoningKey:
-		return &f.reasoningKey
+	case formFieldReasoningKeyCustom:
+		return &f.reasoningKeyCustom
 	}
 	return nil
 }
 
-// buildReasoning assembles the reasoning declaration from the kind-specific rows.
+// dialect returns the currently selected toggle dialect ("" when "not used").
+func (f *modelFormState) dialect() contract.ReasoningToggleDialect {
+	if f.toggleDialectIdx <= 0 || f.toggleDialectIdx > len(contract.ReasoningToggleDialects) {
+		return ""
+	}
+	return contract.ReasoningToggleDialects[f.toggleDialectIdx-1]
+}
+
+// buildReasoning assembles the reasoning declaration from the reasoning page. The rules encode
+// "tell the endpoint not to think in its own dialect, or stay silent":
+//
+//   - levels checked, switch on  -> effort, Default = the chosen default level
+//   - levels checked, switch off -> effort, Default = none (only when "none" is among the
+//     supported levels — the endpoint declared it accepts explicit off); otherwise silent
+//   - no levels, dialect chosen  -> toggle, Default = on/off straight from the switch
+//   - otherwise                  -> nothing is sent (the fail-safe default)
 func (f *modelFormState) buildReasoning() contract.Reasoning {
-	switch f.kind() {
-	case contract.ReasoningKindToggle:
-		return contract.Reasoning{
-			Kind:          contract.ReasoningKindToggle,
-			ToggleDialect: contract.ReasoningToggleDialects[f.toggleDialectIdx],
-			Default:       toggleChoices()[f.toggleIdx],
-		}
-	case contract.ReasoningKindEffort:
+	if f.anyEffort() {
 		r := contract.Reasoning{Kind: contract.ReasoningKindEffort}
 		for i, on := range f.effortsOn {
 			if on {
 				r.Efforts = append(r.Efforts, contract.ReasoningEfforts[i])
 			}
 		}
-		if f.effortDefaultIdx >= 0 && f.effortDefaultIdx < len(contract.ReasoningEfforts) {
-			r.Default = contract.ReasoningEfforts[f.effortDefaultIdx]
+		switch {
+		case f.switchOn:
+			if f.effortDefaultIdx >= 0 && f.effortDefaultIdx < len(contract.ReasoningEfforts) {
+				r.Default = contract.ReasoningEfforts[f.effortDefaultIdx]
+			}
+		case f.effortsOn[effortIndex(contract.ReasoningEffortNone)]:
+			r.Default = contract.ReasoningEffortNone
+		default:
+			// The endpoint accepts no explicit off: sending any level would turn thinking ON,
+			// so the adapters stay silent instead.
+			return contract.Reasoning{}
 		}
 		return r
+	}
+	if d := f.dialect(); d != "" {
+		def := contract.ReasoningToggleOff
+		if f.switchOn {
+			def = contract.ReasoningToggleOn
+		}
+		return contract.Reasoning{
+			Kind:          contract.ReasoningKindToggle,
+			ToggleDialect: d,
+			Default:       def,
+		}
 	}
 	return contract.Reasoning{}
 }
@@ -189,6 +250,12 @@ func (f *modelFormState) buildReasoning() contract.Reasoning {
 // build assembles the Model from the current fields. Choice fields always carry a value; text
 // fields are trimmed (a pasted secret never carries meaningful leading/trailing spaces).
 func (f *modelFormState) build() contract.Model {
+	key := ""
+	if f.reasoningKeyIdx == reasoningKeyCustomIdx {
+		key = strings.TrimSpace(f.reasoningKeyCustom.Value())
+	} else if f.reasoningKeyIdx > 0 {
+		key = reasoningKeyChoices()[f.reasoningKeyIdx]
+	}
 	return contract.Model{
 		Name:     strings.TrimSpace(f.name.Value()),
 		Protocol: protocolChoices()[f.protocolIdx],
@@ -197,16 +264,17 @@ func (f *modelFormState) build() contract.Model {
 		APIKey:   strings.TrimSpace(f.apiKey.Value()),
 		Params: contract.Params{
 			ThinkingEcho: echoChoices()[f.echoIdx],
-			ReasoningKey: strings.TrimSpace(f.reasoningKey.Value()),
+			ReasoningKey: key,
 			Reasoning:    f.buildReasoning(),
 		},
 	}
 }
 
 // handleModelFormKey routes keys to the create-model dialog. The form consumes every key while
-// open: the confirm page answers Enter/Esc only; the edit page navigates with ↑↓/Tab(Shift-Tab),
-// cycles choice fields with ←→ (effort rows toggle on ←→), edits text fields with the usual
-// editing keys, and Enter either reports a validation error or advances to the confirm page.
+// open. Navigation is ↑↓/Tab(Shift-Tab); ←→ cycles choice fields (effort rows toggle); text
+// fields take the usual editing keys. Enter always means "forward": on the entry row it opens
+// the reasoning page, everywhere else it validates and advances to the confirm page. Esc backs
+// out one level (reasoning page → edit page → closed).
 func handleModelFormKey(a *App, e *EventKey) {
 	k := e.Key()
 	f := &a.modelForm
@@ -226,7 +294,17 @@ func handleModelFormKey(a *App, e *EventKey) {
 		return
 	}
 	switch k {
-	case KeyEsc, KeyCtrlC:
+	case KeyCtrlC:
+		closeModelForm(a)
+		return
+	case KeyEsc:
+		if f.reasoning {
+			f.reasoning = false
+			f.focus = formFieldReasoningEntry
+			f.err = ""
+			a.forceRender = true
+			return
+		}
 		closeModelForm(a)
 		return
 	case KeyUp, KeyBacktab:
@@ -240,18 +318,24 @@ func handleModelFormKey(a *App, e *EventKey) {
 	case KeyLeft:
 		if f.focus.isText() {
 			f.textBuf(f.focus).CursorLeft()
-		} else {
+		} else if f.focus != formFieldReasoningEntry {
 			cycleChoice(f, -1)
 		}
 		return
 	case KeyRight:
 		if f.focus.isText() {
 			f.textBuf(f.focus).CursorRight()
+		} else if f.focus == formFieldReasoningEntry {
+			openReasoningPage(a)
 		} else {
 			cycleChoice(f, +1)
 		}
 		return
 	case KeyEnter:
+		if f.focus == formFieldReasoningEntry && !f.reasoning {
+			openReasoningPage(a)
+			return
+		}
 		m := f.build()
 		if err := m.Validate(); err != nil {
 			f.err = fmt.Sprintf(i18n.T("model_form.err.invalid"), err)
@@ -259,6 +343,7 @@ func handleModelFormKey(a *App, e *EventKey) {
 			return
 		}
 		f.confirm = true
+		f.reasoning = false
 		f.err = ""
 		a.forceRender = true
 		return
@@ -268,6 +353,15 @@ func handleModelFormKey(a *App, e *EventKey) {
 			f.err = ""
 		}
 	}
+}
+
+// openReasoningPage opens the reasoning settings page (the edit page stays underneath).
+func openReasoningPage(a *App) {
+	f := &a.modelForm
+	f.reasoning = true
+	f.focus = formFieldThinkingSwitch
+	f.err = ""
+	a.forceRender = true
 }
 
 // moveFocus moves the focus by delta rows within the current row list (clamped, not wrapping —
@@ -286,40 +380,62 @@ func moveFocus(f *modelFormState, delta int) {
 	f.err = ""
 }
 
-// cycleChoice applies ←→ to the focused choice field. Effort rows toggle rather than cycle.
+// cycleChoice applies ←→ to the focused choice field. Effort rows toggle rather than cycle. The
+// capability rows are mutually exclusive: choosing a switch dialect clears the levels (a
+// switch-only model has none), checking any level resets the dialect to "not used".
 func cycleChoice(f *modelFormState, delta int) {
 	switch f.focus {
 	case formFieldProtocol:
 		f.protocolIdx = wrapIdx(f.protocolIdx, delta, len(protocolChoices()))
-	case formFieldThinkingEcho:
-		f.echoIdx = wrapIdx(f.echoIdx, delta, len(echoChoices()))
-	case formFieldReasoningKind:
-		f.kindIdx = wrapIdx(f.kindIdx, delta, len(kindChoices()))
-		if f.kind() == contract.ReasoningKindEffort {
+	case formFieldThinkingSwitch:
+		f.switchOn = !f.switchOn
+		if f.switchOn {
 			f.ensureEffortDefaults()
 		}
-	case formFieldReasoningToggle:
-		f.toggleIdx = wrapIdx(f.toggleIdx, delta, len(toggleChoices()))
+		// Turning the switch off hides the capability rows; the focus is on the switch row,
+		// which is always visible.
+		f.focus = formFieldThinkingSwitch
 	case formFieldToggleDialect:
-		f.toggleDialectIdx = wrapIdx(f.toggleDialectIdx, delta, len(contract.ReasoningToggleDialects))
+		f.toggleDialectIdx = wrapIdx(f.toggleDialectIdx, delta, 1+len(contract.ReasoningToggleDialects))
+		if f.toggleDialectIdx > 0 {
+			f.effortsOn = [len(contract.ReasoningEfforts)]bool{}
+			f.effortDefaultIdx = -1
+		}
 	case formFieldReasoningDefault:
 		f.cycleEffortDefault(delta)
+	case formFieldReasoningKeyChoice:
+		f.reasoningKeyIdx = wrapIdx(f.reasoningKeyIdx, delta, len(reasoningKeyChoices()))
+		if f.reasoningKeyIdx != reasoningKeyCustomIdx {
+			// The custom text row disappears; keep the focus on the choice row.
+			f.focus = formFieldReasoningKeyChoice
+		}
+	case formFieldThinkingEcho:
+		f.echoIdx = wrapIdx(f.echoIdx, delta, len(echoChoices()))
 	default:
 		if i, ok := f.focus.effortIdx(); ok {
 			f.effortsOn[i] = !f.effortsOn[i]
+			if f.effortsOn[i] {
+				// Levels and the switch dialect are exclusive capabilities.
+				f.toggleDialectIdx = 0
+			}
+			if !f.anyEffort() && f.focus == formFieldReasoningDefault {
+				// The default-level row disappears; the dialect row takes its place.
+				f.focus = formFieldToggleDialect
+			}
 			f.normalizeEfforts()
 		}
 	}
 }
 
-// ensureEffortDefaults seeds a sensible supported set the first time the effort rows appear:
-// low/medium/high checked, default medium. The user then trims to the model's real subset.
+// ensureEffortDefaults seeds a sensible supported set the first time the thinking switch turns
+// on: low/medium/high checked, default medium. The user then trims to the model's real subset.
+// Seeding happens once per form — flipping the switch off/on must not fight deliberate edits.
 func (f *modelFormState) ensureEffortDefaults() {
-	for _, on := range f.effortsOn {
-		if on {
-			return
-		}
+	if f.effortsSeeded || f.anyEffort() {
+		f.effortsSeeded = true
+		return
 	}
+	f.effortsSeeded = true
 	f.effortsOn[effortIndex(contract.ReasoningEffortLow)] = true
 	f.effortsOn[effortIndex(contract.ReasoningEffortMedium)] = true
 	f.effortsOn[effortIndex(contract.ReasoningEffortHigh)] = true

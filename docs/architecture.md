@@ -179,17 +179,19 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
   2. **可见性是 UI 的事**：用户看不看思维链由 TUI 显示配置决定（`thinkingMode` 三档：
      compact 摘要 / expanded 全文 / hidden，Ctrl+T 循环，**默认可见**），不进 Model 对象。
   3. **出站回传是线上的事，独立开关**（`Params.ThinkingEcho: "on"|"off"`，**默认 `on`**，
-     用户或上游在创建模型对象时选择）：`on` = 把助手思考按方言键回传进历史（默认
-     `reasoning_content`；不认该字段的服务器会忽略它，需要思考进历史的网关则依赖它）；
-     `off` = 思维链不上出站请求（端点拒收未知字段时用）。`Params.ReasoningKey` 可为非标准
-     网关钉死字段名（收发双向）。
+     用户或上游在创建模型对象时选择）：`on` = 把助手思考回传进历史，方言键取**端点自己
+     说的那个**——`reasoningDialect` 观察入站命中键并记住，出站按记住的键回显（"对方说
+     什么方言就回什么方言"，检测永不遗忘，端点中途换方言下次观察即跟随；不认该字段的
+     服务器会忽略它，需要思考进历史的网关则依赖它）；`off` = 思维链不上出站请求（端点
+     拒收未知字段时用）。`Params.ReasoningKey` 为非标准网关钉死字段名（收发双向生效，
+     并停用方言学习）；从未观察到时回退 `reasoning_content`。
   4. **请求侧"思考深度"控制（2026-09 调研，已实施到 `contract.Reasoning`）**：形状按能力
      分三类，绝不混用一个字段：
 
      | 类别 | 谁在用 | 传参形状 |
      |---|---|---|
      | 等级型 | OpenAI Chat Completions 顶层 `reasoning_effort`；OpenRouter `reasoning.effort`；Gemini `thinking_level`；Anthropic 新式 `output_config.effort` | 枚举，**每个模型自述支持子集** |
-     | 开关型 | DashScope/Qwen `enable_thinking`（布尔）；Ollama `think`（布尔）；GLM `thinking:{type:"enabled"/"disabled"}`（对象） | 二值开关，深度不可调 |
+     | 开关型 | DashScope/Qwen `enable_thinking`（布尔）；Ollama `think`（布尔）；GLM `thinking:{type:"enabled"|"disabled"}`（对象） | 二值开关，深度不可调 |
      | 预算型 | Anthropic 旧式 `thinking.budget_tokens`；DashScope `thinking_budget`；Gemini `thinkingBudget` | 整数预算（`budget` kind 预留未实施） |
 
      等级枚举并集 = `none / minimal / low / medium / high / xhigh / max`（OpenAI 官方文档
@@ -198,22 +200,34 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
      models 端点以 `supported_efforts` + `mandatory` 自述能力）。
 
      我们的规范：
-     1. 模型对象声明能力（`Params.Reasoning`：Kind + 等级子集 + 默认档），TUI 表单从预设
-        勾选支持级别再选默认等级（`kind=toggle` 则选默认开/关）。
-     2. `kind=effort` → `adapters/openaichat` 发顶层 `reasoning_effort: <默认档>`（"max"
+     1. 模型对象声明能力（`Params.Reasoning`：Kind + 等级子集 + 默认档）。TUI 把推理配置
+        收进**二级设置页**：一个独立**思考开关**（纯开/关，不承担种类切换），打开后出现
+        "允许等级"多选（7 档预设）与"默认推理等级"；"开关方言"行给仅开关型网关，与等级
+        **互斥**（选方言即清空等级，勾等级即把方言复位为"不使用"），声明不会自相矛盾。
+     2. 开关到落线的映射原则是"**按端点方言明确关，无法表达就沉默**"：
+        开 + 等级 → `Default=默认档`；关 + 等级含 `none` → `Default=none`（端点自述接受
+        明确关闭）；关 + 等级不含 `none` → 什么都不发（强制思考模型无法表达关，发任何档
+        都会把思考打开）；开关方言已选 → 开关直接映射 `Default=on/off`（Qwen3 这类默认开
+        思考的网关必须显式发 false 才算关）。
+     3. `kind=effort` → `adapters/openaichat` 发顶层 `reasoning_effort: <默认档>`（"max"
         这类 SDK 无常量的值原样落线）；`kind=none` 什么都不发——安全默认，乱发参数会被
         不支持的端点 400 拒收。
-     3. `kind=toggle` 按方言映射（`Params.Reasoning.ToggleDialect` 钉死方言，模型对象里选）：
+     4. `kind=toggle` 按方言映射（`Params.Reasoning.ToggleDialect` 钉死方言，模型对象里选）：
         `enable_thinking` → 顶层 `"enable_thinking": true|false`（Qwen/百炼系）；
         `think` → 顶层 `"think": true|false`（Ollama 系）；
         `thinking-type` → `"thinking": {"type":"enabled"|"disabled"}`（GLM）。
         实测断言见 `adapters/openaichat/client_test.go` 的 wire 测试。
-     4. 每请求改档位留给 loop→adapter 的 `ModelRequest` 扩展，暂不做。
+     5. 每请求改档位留给 loop→adapter 的 `ModelRequest` 扩展，暂不做。
 
-  证据：MoonshotAI/kimi-code `providers/reasoning-key.ts`（KNOWN_REASONING_KEYS + 方言回传）、
-  MiniMax-AI/minimax-code `model-provider/thinking.ts`（`thinking.type` / `reasoning_effort`）、
-  zai-org/ZCode `prompt-trajectory/openai-response-assembler.ts`（`delta.reasoning_content`
-  累积写回 message）。
+  证据：MoonshotAI/kimi-code `packages/kosong/src/providers/reasoning-key.ts`
+  （KNOWN_REASONING_KEYS 优先级扫描 + `ReasoningKeyDialect` **按端点学习出站方言**、显式
+  键停用检测——"各家软件很少设置这个字段"的真相就是智能适配：入站扫描 + 出站回说对方的
+  方言，只有非标准网关才钉死字段名）；BerriAI/litellm（每厂商一份 transformation 硬编码
+  `reasoning_content`，流式层直查字段，另提供 `merge_reasoning_content_in_choices` 打包
+  成 `<think>` 块）；zai-org/ZCode `adapters/src/model/reasoning-history-normalization.ts`
+  （历史卫生：跨模型思维链剔除、签名拒绝后修复——回传的配套问题）；
+  MiniMax-AI/minimax-code `model-provider/thinking.ts`（on/off 模型映射
+  `thinking:{type:adaptive|disabled}`，与我们 `thinking-type` 方言同形）。
 
 ---
 

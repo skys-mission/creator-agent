@@ -11,15 +11,16 @@ import (
 // wizard) so the dialog is self-contained: it fills its own rect, the overlay chain handles the
 // rest. Style mirrors the wizard: a centered dashed-border box on a dimmed full-screen background.
 
-// drawModelForm paints the create-model dialog (edit page or confirm page) and flushes the frame.
+// drawModelForm paints the create-model dialog (edit page, reasoning page or confirm page) and
+// flushes the frame.
 func drawModelForm(a *App) {
 	surf := newSurface(a.screen)
 	surf.FillFrame(' ', pal().frameBg)
 
 	w, h := a.screen.Size()
 	boxW := mini(w-4, 72)
-	// The row list is dynamic (kind-dependent), so the box grows with it. Layout needs
-	// rows + 6: title/blank above, err + footer + border below.
+	// The row list is dynamic (page- and state-dependent), so the box grows with it. Layout
+	// needs rows + 6: title/blank above, err + footer + border below.
 	needed := len(formRows(&a.modelForm)) + 6
 	boxH := mini(h-2, needed)
 	if boxW < 34 || boxH < needed {
@@ -38,7 +39,16 @@ func drawModelForm(a *App) {
 	innerX := 2
 	innerW := boxW - 4
 
-	box.DrawPlain(innerX, 1, i18n.T("model_form.title"), stylePaletteAccent())
+	title := i18n.T("model_form.title")
+	footer := i18n.T("model_form.footer.form")
+	switch {
+	case a.modelForm.confirm:
+		footer = i18n.T("model_form.footer.confirm")
+	case a.modelForm.reasoning:
+		title = i18n.T("model_form.title.reasoning")
+		footer = i18n.T("model_form.footer.reasoning")
+	}
+	box.DrawPlain(innerX, 1, title, stylePaletteAccent())
 	a.screen.HideCursor()
 
 	f := &a.modelForm
@@ -51,17 +61,13 @@ func drawModelForm(a *App) {
 	if f.err != "" {
 		box.DrawPlain(innerX, boxH-3, truncatePlain(f.err, innerW), styleError())
 	}
-	footer := i18n.T("model_form.footer.form")
-	if f.confirm {
-		footer = i18n.T("model_form.footer.confirm")
-	}
 	box.DrawPlain(innerX, boxH-2, truncatePlain(footer, innerW), styleToolDim())
 	_ = a.screen.Sync()
 }
 
-// drawModelFormFields draws the field rows of the edit page (the row list depends on the
-// reasoning kind, see formRows). The focused row is marked with "> " and drawn in the accent
-// style; its text field also gets the hardware cursor.
+// drawModelFormFields draws the field rows of the edit or reasoning page (the row list depends
+// on the page and the thinking switch, see formRows). The focused row is marked with "> " and
+// drawn in the accent style; its text field also gets the hardware cursor.
 func drawModelFormFields(a *App, box *Surface, boxX, boxY, innerX, innerW int) {
 	f := &a.modelForm
 	rows := formRows(f)
@@ -114,10 +120,8 @@ func drawModelFormConfirm(a *App, box *Surface, innerX, innerW int) {
 		{formLabel(formFieldBaseURL), orDash(m.BaseURL)},
 		{formLabel(formFieldModelID), m.ModelID},
 		{formLabel(formFieldAPIKey), keyVal},
-		{formLabel(formFieldThinkingEcho), echoValueLabel(m.Params.ThinkingEcho)},
-		{formLabel(formFieldReasoningKey), orDash(m.Params.ReasoningKey)},
 	}
-	rows = append(rows, reasoningSummaryRows(m.Params.Reasoning)...)
+	rows = append(rows, reasoningSummaryRows(m.Params)...)
 	box.DrawPlain(innerX, 2, i18n.T("model_form.confirm.prompt"), styleToolDim())
 	for i, r := range rows {
 		line := r.label + ": " + r.value
@@ -125,28 +129,35 @@ func drawModelFormConfirm(a *App, box *Surface, innerX, innerW int) {
 	}
 }
 
-// reasoningSummaryRows turns the reasoning declaration into review rows (kind always; the
-// supported set + default for effort; the default switch for toggle).
-func reasoningSummaryRows(r contract.Reasoning) []struct{ label, value string } {
+// reasoningSummaryRows turns the stored params into review rows: the wire shape the adapters
+// will send (kind + levels/default or dialect), then the reasoning-content field and the
+// thinking history echo.
+func reasoningSummaryRows(p contract.Params) []struct{ label, value string } {
 	rows := []struct{ label, value string }{
-		{formLabel(formFieldReasoningKind), kindValueLabel(r.Kind)},
+		{i18n.T("model_form.field.reasoning_kind"), kindValueLabel(p.Reasoning.Kind)},
 	}
-	switch r.Kind {
+	switch p.Reasoning.Kind {
 	case contract.ReasoningKindToggle:
 		rows = append(rows, struct{ label, value string }{
-			formLabel(formFieldReasoningToggle), toggleValueLabel(r.Default),
+			i18n.T("model_form.field.toggle_dialect"), dialectValueLabel(p.Reasoning.ToggleDialect),
 		})
 		rows = append(rows, struct{ label, value string }{
-			formLabel(formFieldToggleDialect), dialectValueLabel(r.ToggleDialect),
+			i18n.T("model_form.field.thinking_switch"), toggleValueLabel(p.Reasoning.Default),
 		})
 	case contract.ReasoningKindEffort:
 		rows = append(rows, struct{ label, value string }{
-			i18n.T("model_form.field.reasoning_supported"), strings.Join(r.Efforts, ", "),
+			i18n.T("model_form.field.reasoning_supported"), strings.Join(p.Reasoning.Efforts, ", "),
 		})
 		rows = append(rows, struct{ label, value string }{
-			formLabel(formFieldReasoningDefault), orDash(r.Default),
+			i18n.T("model_form.field.reasoning_default"), orDash(p.Reasoning.Default),
 		})
 	}
+	rows = append(rows, struct{ label, value string }{
+		i18n.T("model_form.field.reasoning_key"), reasoningKeyLabel(p.ReasoningKey),
+	})
+	rows = append(rows, struct{ label, value string }{
+		i18n.T("model_form.field.thinking_echo"), echoValueLabel(p.ThinkingEcho),
+	})
 	return rows
 }
 
@@ -163,18 +174,20 @@ func formLabel(k modelFormField) string {
 		return i18n.T("model_form.field.model_id")
 	case formFieldAPIKey:
 		return i18n.T("model_form.field.api_key")
-	case formFieldThinkingEcho:
-		return i18n.T("model_form.field.thinking_echo")
-	case formFieldReasoningKey:
-		return i18n.T("model_form.field.reasoning_key")
-	case formFieldReasoningKind:
-		return i18n.T("model_form.field.reasoning_kind")
-	case formFieldReasoningToggle:
-		return i18n.T("model_form.field.reasoning_toggle")
-	case formFieldToggleDialect:
-		return i18n.T("model_form.field.toggle_dialect")
+	case formFieldReasoningEntry:
+		return i18n.T("model_form.field.reasoning_entry")
+	case formFieldThinkingSwitch:
+		return i18n.T("model_form.field.thinking_switch")
 	case formFieldReasoningDefault:
 		return i18n.T("model_form.field.reasoning_default")
+	case formFieldToggleDialect:
+		return i18n.T("model_form.field.toggle_dialect")
+	case formFieldReasoningKeyChoice:
+		return i18n.T("model_form.field.reasoning_key")
+	case formFieldReasoningKeyCustom:
+		return i18n.T("model_form.field.reasoning_key_custom")
+	case formFieldThinkingEcho:
+		return i18n.T("model_form.field.thinking_echo")
 	}
 	if i, ok := k.effortIdx(); ok {
 		return contract.ReasoningEfforts[i]
@@ -193,8 +206,8 @@ func formHint(k modelFormField) string {
 		return i18n.T("model_form.hint.model_id")
 	case formFieldAPIKey:
 		return i18n.T("model_form.hint.api_key")
-	case formFieldReasoningKey:
-		return i18n.T("model_form.hint.reasoning_key")
+	case formFieldReasoningKeyCustom:
+		return i18n.T("model_form.hint.reasoning_key_custom")
 	}
 	return ""
 }
@@ -208,12 +221,14 @@ func formDisplay(f *modelFormState, k modelFormField) (text string, isHint bool,
 		return string(protocolChoices()[f.protocolIdx]), false, false
 	case formFieldThinkingEcho:
 		return echoValueLabel(echoChoices()[f.echoIdx]), false, false
-	case formFieldReasoningKind:
-		return kindValueLabel(f.kind()), false, false
-	case formFieldReasoningToggle:
-		return toggleValueLabel(toggleChoices()[f.toggleIdx]), false, false
+	case formFieldThinkingSwitch:
+		return toggleValueLabel(toggleOnOff(f.switchOn)), false, false
+	case formFieldReasoningEntry:
+		return reasoningEntrySummary(f), false, false
 	case formFieldToggleDialect:
-		return dialectValueLabel(contract.ReasoningToggleDialects[f.toggleDialectIdx]), false, false
+		return dialectValueLabel(f.dialect()), false, false
+	case formFieldReasoningKeyChoice:
+		return reasoningKeyLabel(reasoningKeyChoices()[f.reasoningKeyIdx]), false, false
 	case formFieldReasoningDefault:
 		if f.effortDefaultIdx < 0 {
 			return orDash(""), false, false
@@ -234,6 +249,28 @@ func formDisplay(f *modelFormState, k modelFormField) (text string, isHint bool,
 		return strings.Repeat("•", len([]rune(val))), false, true
 	}
 	return val, false, false
+}
+
+// reasoningEntrySummary renders the one-line wire summary for the edit-page entry row: what the
+// adapters will send for thinking-depth control.
+func reasoningEntrySummary(f *modelFormState) string {
+	sw := toggleValueLabel(toggleOnOff(f.switchOn))
+	r := f.buildReasoning()
+	switch r.Kind {
+	case contract.ReasoningKindEffort:
+		return sw + " · " + kindValueLabel(r.Kind) + " " + r.Default + " [" + strings.Join(r.Efforts, "/") + "]"
+	case contract.ReasoningKindToggle:
+		return sw + " · " + kindValueLabel(r.Kind) + " " + string(r.ToggleDialect)
+	}
+	return sw + " · " + kindValueLabel(r.Kind)
+}
+
+// toggleOnOff maps a bool onto the contract toggle values.
+func toggleOnOff(on bool) string {
+	if on {
+		return contract.ReasoningToggleOn
+	}
+	return contract.ReasoningToggleOff
 }
 
 // echoValueLabel localizes a thinking-echo mode.
@@ -264,15 +301,37 @@ func kindValueLabel(k contract.ReasoningKind) string {
 }
 
 // dialectValueLabel localizes a toggle dialect (the wire name stays visible — that is what the
-// user must match to their gateway).
+// user must match to their gateway). The empty dialect is "not used".
 func dialectValueLabel(d contract.ReasoningToggleDialect) string {
 	switch d {
 	case contract.ToggleDialectThink:
 		return i18n.T("model_form.value.dialect.think")
 	case contract.ToggleDialectThinkingType:
 		return i18n.T("model_form.value.dialect.thinking_type")
+	case contract.ToggleDialectEnableThinking:
+		return i18n.T("model_form.value.dialect.enable_thinking")
 	}
-	return i18n.T("model_form.value.dialect.enable_thinking")
+	return i18n.T("model_form.value.dialect.none")
+}
+
+// reasoningKeyLabel localizes the reasoning-content wire-field choice: the empty key is the
+// recommended smart adaptation, presets show their wire name, "-" is the custom entry.
+func reasoningKeyLabel(key string) string {
+	switch key {
+	case "":
+		return i18n.T("model_form.value.key.auto")
+	case "reasoning_content":
+		return i18n.T("model_form.value.key.reasoning_content")
+	case "reasoning_details":
+		return i18n.T("model_form.value.key.reasoning_details")
+	case "reasoning":
+		return i18n.T("model_form.value.key.reasoning")
+	case "reasoning_text":
+		return i18n.T("model_form.value.key.reasoning_text")
+	case "-":
+		return i18n.T("model_form.value.key.custom")
+	}
+	return key
 }
 
 // formCursorCols returns the display column of the editing cursor within a focused text field.
