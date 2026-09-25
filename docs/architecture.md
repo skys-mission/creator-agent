@@ -74,7 +74,7 @@ core/
   ├── config/             分层配置管理（见 §6）
   └── plugins/            Lua 插件宿主
       └── luavm/          VM 窄接口（lunar 实现，可整体替换）
-adapters/                 模型适配（anthropic / openai / …）
+adapters/                 模型适配（协议分包：openaichat / …；唯一允许 import 厂商 SDK 的地方）
 contract/                 proto 生成类型 + 少量叶子助手（会话 ID、路径等）
 kernel/                   生命周期框架（保留，原样）
 ```
@@ -147,12 +147,44 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
 
   ```go
   type ModelClient interface {
-      Stream(ctx context.Context, req *contract.StreamInput) (<-chan contract.Event, error)
+      Stream(ctx context.Context, req *contract.ModelRequest) (<-chan contract.Event, error)
       Name() string
   }
   ```
 
-  provider SDK 类型不得越过 adapters/ 边界。
+  请求用 `contract.ModelRequest`（messages + tools），不是 `StreamInput`：一次 agent 执行
+  含多次模型调用，每次的历史与工具面都不同——执行输入（TUI→agent）与模型调用输入
+  （loop→adapter）是两个生命周期。provider SDK 类型不得越过 adapters/ 边界。
+
+- **思维链回传（事实规范）**：OpenAI Chat Completions 生态**从未标准化**思维链字段，
+  圈内流通四个名字（调研自三个开源实现 + vLLM 变更记录）：
+
+  | 字段 | 谁在用 | 备注 |
+  |---|---|---|
+  | `reasoning_content` | DeepSeek 发明；Kimi API、旧 vLLM、绝大多数兼容网关 | **事实默认** |
+  | `reasoning_details` | OpenRouter | 有时是数组形状，不是字符串 |
+  | `reasoning` | OpenAI GPT-OSS 指引；新 vLLM（vllm#27752，请求侧只认它 #38488） | |
+  | `reasoning_text` | minimax-code 实测扫描的变体 | |
+
+  我们的规范（`adapters/openaichat` 已实施）：
+  1. **入站**按 `reasoning_content > reasoning_details > reasoning > reasoning_text` 优先级
+     扫描，只认字符串值（跳过 vLLM 的 `null` 占位、OpenRouter 的数组），只取第一个命中。
+     **解析永远开**——数据层不丢数据。
+  2. **可见性是 UI 的事**：用户看不看思维链由 TUI 显示配置决定（`thinkingMode` 三档：
+     compact 摘要 / expanded 全文 / hidden，Ctrl+T 循环，**默认可见**），不进 Model 对象。
+  3. **出站回传是线上的事，独立开关**（`Params.ThinkingEcho: "on"|"off"`，**默认 `on`**，
+     用户或上游在创建模型对象时选择）：`on` = 把助手思考按方言键回传进历史（默认
+     `reasoning_content`；不认该字段的服务器会忽略它，需要思考进历史的网关则依赖它）；
+     `off` = 思维链不上出站请求（端点拒收未知字段时用）。`Params.ReasoningKey` 可为非标准
+     网关钉死字段名（收发双向）。
+  4. **请求侧"开思考"参数不发**（`reasoning_effort` 顶层字段 / `thinking.type` 等方言各异，
+     且会打破不支持的端点——如 gpt-5 系拒绝 `reasoning_effort: "none"`），留在 `Params`
+     后续讨论。
+
+  证据：MoonshotAI/kimi-code `providers/reasoning-key.ts`（KNOWN_REASONING_KEYS + 方言回传）、
+  MiniMax-AI/minimax-code `model-provider/thinking.ts`（`thinking.type` / `reasoning_effort`）、
+  zai-org/ZCode `prompt-trajectory/openai-response-assembler.ts`（`delta.reasoning_content`
+  累积写回 message）。
 
 ---
 
