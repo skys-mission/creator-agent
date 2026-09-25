@@ -405,7 +405,7 @@ func TestModelFormToggleDialectExclusive(t *testing.T) {
 		t.Fatalf("toggle declaration should validate: %v", err)
 	}
 
-	// The dialect row cycles through the three gateway switch shapes and back to "not used".
+	// The dialect row cycles through every surveyed gateway switch shape and back to "not sent".
 	injectKey(a, KeyRight)
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectThink {
 		t.Fatalf("dialect = %q, want think (Ollama)", got)
@@ -414,12 +414,28 @@ func TestModelFormToggleDialectExclusive(t *testing.T) {
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectThinkingType {
 		t.Fatalf("dialect = %q, want thinking-type (GLM)", got)
 	}
-	injectKey(a, KeyRight) // wraps through "not used"
+	injectKey(a, KeyRight)
+	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectChatTemplateEnableThinking {
+		t.Fatalf("dialect = %q, want chat-template-enable-thinking (vLLM Qwen3)", got)
+	}
+	injectKey(a, KeyRight)
+	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectChatTemplateThinking {
+		t.Fatalf("dialect = %q, want chat-template-thinking (vLLM Granite)", got)
+	}
+	injectKey(a, KeyRight)
+	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectReasoningEnabled {
+		t.Fatalf("dialect = %q, want reasoning-enabled (OpenRouter)", got)
+	}
+	injectKey(a, KeyRight)
+	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectCustom {
+		t.Fatalf("dialect = %q, want the custom escape hatch", got)
+	}
+	injectKey(a, KeyRight) // wraps through "not sent"
 	if got := a.modelForm.dialect(); got != "" {
-		t.Fatalf("dialect = %q, want wrap to not used", got)
+		t.Fatalf("dialect = %q, want wrap to not sent", got)
 	}
 	if got := a.modelForm.buildReasoning(); !reflect.DeepEqual(got, contract.Reasoning{}) {
-		t.Fatalf("reasoning = %+v, want silent declaration at not used", got)
+		t.Fatalf("reasoning = %+v, want silent declaration at not sent", got)
 	}
 	injectKey(a, KeyRight)
 	if got := a.modelForm.buildReasoning().ToggleDialect; got != contract.ToggleDialectEnableThinking {
@@ -434,6 +450,69 @@ func TestModelFormToggleDialectExclusive(t *testing.T) {
 	}
 	if got := a.modelForm.buildReasoning().Kind; got != contract.ReasoningKindEffort {
 		t.Fatalf("kind = %q, want effort after checking a level", got)
+	}
+}
+
+func TestModelFormToggleDialectCustom(t *testing.T) {
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a)
+	injectKey(a, KeyRight) // switch on
+	f := &a.modelForm
+
+	// The custom slot is the last cycle entry; selecting it reveals the free-text field row.
+	f.focus = formFieldToggleDialect
+	f.toggleDialectIdx = len(contract.ReasoningToggleDialects) - 1
+	injectKey(a, KeyRight) // -> custom
+	if f.dialect() != contract.ToggleDialectCustom {
+		t.Fatalf("dialect = %q, want custom", f.dialect())
+	}
+	found := false
+	for _, r := range formRows(f) {
+		if r == formFieldToggleCustom {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rows = %v, want the custom switch field row", formRows(f))
+	}
+
+	// The field name feeds the declaration (dots nest: a.b -> {"a": {"b": ...}}).
+	f.focus = formFieldToggleCustom
+	typeText(a, "a.b")
+	got := f.buildReasoning()
+	want := contract.Reasoning{
+		Kind:          contract.ReasoningKindToggle,
+		ToggleDialect: contract.ToggleDialectCustom,
+		ToggleField:   "a.b",
+		Default:       contract.ReasoningToggleOn,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reasoning = %+v, want %+v", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("custom declaration should validate: %v", err)
+	}
+
+	// An empty custom field must fail validation, not silently drop the switch the user asked for.
+	f.toggleCustom = inputBuffer{}
+	if err := f.buildReasoning().Validate(); err == nil {
+		t.Fatal("empty custom field must fail validation")
+	}
+
+	// Leaving the custom slot hides the text row and keeps the focus on the choice row.
+	f.focus = formFieldToggleDialect
+	injectKey(a, KeyRight) // custom wraps to "not sent"
+	if f.dialect() != "" {
+		t.Fatalf("dialect = %q, want wrap to not sent", f.dialect())
+	}
+	for _, r := range formRows(f) {
+		if r == formFieldToggleCustom {
+			t.Fatalf("rows = %v, want the custom row gone", formRows(f))
+		}
+	}
+	if f.focus != formFieldToggleDialect {
+		t.Fatalf("focus = %v, want the choice row", f.focus)
 	}
 }
 

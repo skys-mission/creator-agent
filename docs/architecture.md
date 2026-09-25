@@ -191,7 +191,7 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
      | 类别 | 谁在用 | 传参形状 |
      |---|---|---|
      | 等级型 | OpenAI Chat Completions 顶层 `reasoning_effort`；OpenRouter `reasoning.effort`；Gemini `thinking_level`；Anthropic 新式 `output_config.effort` | 枚举，**每个模型自述支持子集** |
-     | 开关型 | DashScope/Qwen `enable_thinking`（布尔）；Ollama `think`（布尔）；GLM `thinking:{type:"enabled"|"disabled"}`（对象） | 二值开关，深度不可调 |
+     | 开关型 | DashScope/Qwen `enable_thinking`（布尔）；Ollama `think`（布尔）；GLM/DeepSeek `thinking:{type:"enabled"/"disabled"}`（对象）；vLLM/SGLang `chat_template_kwargs:{enable_thinking\|thinking}`（模板布尔）；OpenRouter `reasoning:{enabled}`（对象布尔臂） | 二值开关，深度不可调 |
      | 预算型 | Anthropic 旧式 `thinking.budget_tokens`；DashScope `thinking_budget`；Gemini `thinkingBudget` | 整数预算（`budget` kind 预留未实施） |
 
      等级枚举并集 = `none / minimal / low / medium / high / xhigh / max`（OpenAI 官方文档
@@ -212,11 +212,23 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
      3. `kind=effort` → `adapters/openaichat` 发顶层 `reasoning_effort: <默认档>`（"max"
         这类 SDK 无常量的值原样落线）；`kind=none` 什么都不发——安全默认，乱发参数会被
         不支持的端点 400 拒收。
-     4. `kind=toggle` 按方言映射（`Params.Reasoning.ToggleDialect` 钉死方言，模型对象里选）：
-        `enable_thinking` → 顶层 `"enable_thinking": true|false`（Qwen/百炼系）；
-        `think` → 顶层 `"think": true|false`（Ollama 系）；
-        `thinking-type` → `"thinking": {"type":"enabled"|"disabled"}`（GLM）。
-        实测断言见 `adapters/openaichat/client_test.go` 的 wire 测试。
+     4. `kind=toggle` 按方言映射（`Params.Reasoning.ToggleDialect` 钉死方言，模型对象里选）。
+        **布尔开关没有事实标准**（不像思维链字段有 `reasoning_content` 事实默认），各家字段名和
+        形状都不同，所以方言池尽量铺满实测形状 + 自定义口，UI 循环第一项是**不传（推荐）**
+        （乱发开关会被不认识的端点 400 拒收）：
+
+        | 方言 | 线上形状 | 谁在用 |
+        |---|---|---|
+        | `enable_thinking` | 顶层 `"enable_thinking": true\|false` | Qwen/百炼系 |
+        | `think` | 顶层 `"think": true\|false` | Ollama 系 |
+        | `thinking-type` | `"thinking": {"type":"enabled"\|"disabled"}` | GLM / DeepSeek |
+        | `chat-template-enable-thinking` | `"chat_template_kwargs": {"enable_thinking": true\|false}` | vLLM/SGLang 跑 Qwen3、Gemma |
+        | `chat-template-thinking` | `"chat_template_kwargs": {"thinking": true\|false}` | vLLM 跑 Granite、DeepSeek-V3.1 |
+        | `reasoning-enabled` | `"reasoning": {"enabled": true\|false}` | OpenRouter |
+        | 自定义 | `Params.Reasoning.ToggleField` 点号路径（`a.b` → `{"a":{"b":…}}`）按 `true\|false` 发 | 上表之外的新网关 |
+
+        实测断言见 `adapters/openaichat/client_test.go` 的 wire 测试（含嵌套形状）。自定义
+        字段名留空时提交直接校验失败，不静默丢开关。
      5. 每请求改档位留给 loop→adapter 的 `ModelRequest` 扩展，暂不做。
 
   证据：MoonshotAI/kimi-code `packages/kosong/src/providers/reasoning-key.ts`
@@ -227,7 +239,11 @@ core 能力以 **Go 方法**暴露（`contract` 类型 + `Agent`/`Session`/`Conf
   成 `<think>` 块）；zai-org/ZCode `adapters/src/model/reasoning-history-normalization.ts`
   （历史卫生：跨模型思维链剔除、签名拒绝后修复——回传的配套问题）；
   MiniMax-AI/minimax-code `model-provider/thinking.ts`（on/off 模型映射
-  `thinking:{type:adaptive|disabled}`，与我们 `thinking-type` 方言同形）。
+  `thinking:{type:adaptive|disabled}`，与我们 `thinking-type` 方言同形）；
+  vLLM `docs/features/reasoning_outputs.md`（`--reasoning-parser` + `chat_template_kwargs`
+  模板布尔，键名随所跑模型变：Qwen3/Gemma 用 `enable_thinking`，Granite/DeepSeek-V3.1 用
+  `thinking`）；OpenRouter reasoning 文档（`reasoning:{effort|max_tokens|enabled|exclude}`，
+  `effort` 与 `max_tokens` 二选一，`effort:"none"` 即彻底关思考）。
 
 ---
 

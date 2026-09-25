@@ -170,20 +170,31 @@ func TestStreamEndToEnd(t *testing.T) {
 
 func TestStreamToggleDialectWire(t *testing.T) {
 	// kind=toggle must land on the wire in the exact shape of the pinned dialect — and must not
-	// smuggle in reasoning_effort (that is the effort kind's field).
+	// smuggle in reasoning_effort (that is the effort kind's field). Every surveyed wire shape is
+	// pinned here, including the custom dialect's dotted-path nesting.
 	cases := []struct {
 		name    string
 		dialect contract.ReasoningToggleDialect
+		field   string
 		def     string
 		wantKey string
 		wantVal any
 	}{
-		{"dashscope on", contract.ToggleDialectEnableThinking, contract.ReasoningToggleOn, "enable_thinking", true},
-		{"dashscope off", contract.ToggleDialectEnableThinking, contract.ReasoningToggleOff, "enable_thinking", false},
-		{"ollama on", contract.ToggleDialectThink, contract.ReasoningToggleOn, "think", true},
-		{"ollama off", contract.ToggleDialectThink, contract.ReasoningToggleOff, "think", false},
-		{"glm on", contract.ToggleDialectThinkingType, contract.ReasoningToggleOn, "thinking", map[string]any{"type": "enabled"}},
-		{"glm off", contract.ToggleDialectThinkingType, contract.ReasoningToggleOff, "thinking", map[string]any{"type": "disabled"}},
+		{"dashscope on", contract.ToggleDialectEnableThinking, "", contract.ReasoningToggleOn, "enable_thinking", true},
+		{"dashscope off", contract.ToggleDialectEnableThinking, "", contract.ReasoningToggleOff, "enable_thinking", false},
+		{"ollama on", contract.ToggleDialectThink, "", contract.ReasoningToggleOn, "think", true},
+		{"ollama off", contract.ToggleDialectThink, "", contract.ReasoningToggleOff, "think", false},
+		{"glm on", contract.ToggleDialectThinkingType, "", contract.ReasoningToggleOn, "thinking", map[string]any{"type": "enabled"}},
+		{"glm off", contract.ToggleDialectThinkingType, "", contract.ReasoningToggleOff, "thinking", map[string]any{"type": "disabled"}},
+		{"vllm qwen3 on", contract.ToggleDialectChatTemplateEnableThinking, "", contract.ReasoningToggleOn, "chat_template_kwargs", map[string]any{"enable_thinking": true}},
+		{"vllm qwen3 off", contract.ToggleDialectChatTemplateEnableThinking, "", contract.ReasoningToggleOff, "chat_template_kwargs", map[string]any{"enable_thinking": false}},
+		{"vllm granite on", contract.ToggleDialectChatTemplateThinking, "", contract.ReasoningToggleOn, "chat_template_kwargs", map[string]any{"thinking": true}},
+		{"vllm granite off", contract.ToggleDialectChatTemplateThinking, "", contract.ReasoningToggleOff, "chat_template_kwargs", map[string]any{"thinking": false}},
+		{"openrouter on", contract.ToggleDialectReasoningEnabled, "", contract.ReasoningToggleOn, "reasoning", map[string]any{"enabled": true}},
+		{"openrouter off", contract.ToggleDialectReasoningEnabled, "", contract.ReasoningToggleOff, "reasoning", map[string]any{"enabled": false}},
+		{"custom root on", contract.ToggleDialectCustom, "my_flag", contract.ReasoningToggleOn, "my_flag", true},
+		{"custom root off", contract.ToggleDialectCustom, "my_flag", contract.ReasoningToggleOff, "my_flag", false},
+		{"custom nested", contract.ToggleDialectCustom, "a.b", contract.ReasoningToggleOn, "a", map[string]any{"b": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -197,7 +208,7 @@ func TestStreamToggleDialectWire(t *testing.T) {
 			c, err := New(Config{
 				ModelID: "test-model", APIKey: "k", BaseURL: srv.URL + "/v1",
 				Reasoning: contract.Reasoning{
-					Kind: contract.ReasoningKindToggle, ToggleDialect: tc.dialect, Default: tc.def,
+					Kind: contract.ReasoningKindToggle, ToggleDialect: tc.dialect, ToggleField: tc.field, Default: tc.def,
 				},
 			})
 			if err != nil {

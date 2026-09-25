@@ -49,6 +49,7 @@ const (
 	formFieldEffortMax
 	formFieldReasoningDefault   // default level among the supported ones
 	formFieldToggleDialect      // on/off-only gateway switch shape ("not used" for effort models)
+	formFieldToggleCustom       // free-text wire field path for the custom switch dialect
 	formFieldReasoningKeyChoice // reasoning-content wire field: auto / preset / custom
 	formFieldReasoningKeyCustom // free-text wire field name for the custom preset
 	formFieldThinkingEcho       // thinking history round-trip
@@ -68,6 +69,7 @@ type modelFormState struct {
 	modelID            inputBuffer
 	apiKey             inputBuffer
 	reasoningKeyCustom inputBuffer
+	toggleCustom       inputBuffer
 
 	protocolIdx      int  // index into protocolChoices()
 	switchOn         bool // the standalone thinking switch
@@ -145,6 +147,9 @@ func reasoningRows(f *modelFormState) []modelFormField {
 			rows = append(rows, formFieldReasoningDefault)
 		}
 		rows = append(rows, formFieldToggleDialect)
+		if f.dialect() == contract.ToggleDialectCustom {
+			rows = append(rows, formFieldToggleCustom)
+		}
 	}
 	rows = append(rows, formFieldReasoningKeyChoice)
 	if f.reasoningKeyIdx == reasoningKeyCustomIdx {
@@ -191,6 +196,8 @@ func (f *modelFormState) textBuf(k modelFormField) *inputBuffer {
 		return &f.apiKey
 	case formFieldReasoningKeyCustom:
 		return &f.reasoningKeyCustom
+	case formFieldToggleCustom:
+		return &f.toggleCustom
 	}
 	return nil
 }
@@ -238,11 +245,17 @@ func (f *modelFormState) buildReasoning() contract.Reasoning {
 		if f.switchOn {
 			def = contract.ReasoningToggleOn
 		}
-		return contract.Reasoning{
+		r := contract.Reasoning{
 			Kind:          contract.ReasoningKindToggle,
 			ToggleDialect: d,
 			Default:       def,
 		}
+		if d == contract.ToggleDialectCustom {
+			// An empty field fails Reasoning.Validate() on submit — fail loud rather than
+			// silently dropping the switch the user asked for.
+			r.ToggleField = strings.TrimSpace(f.toggleCustom.Value())
+		}
+		return r
 	}
 	return contract.Reasoning{}
 }
@@ -400,6 +413,10 @@ func cycleChoice(f *modelFormState, delta int) {
 		if f.toggleDialectIdx > 0 {
 			f.effortsOn = [len(contract.ReasoningEfforts)]bool{}
 			f.effortDefaultIdx = -1
+		}
+		if f.dialect() != contract.ToggleDialectCustom {
+			// The custom text row disappears; keep the focus on the choice row.
+			f.focus = formFieldToggleDialect
 		}
 	case formFieldReasoningDefault:
 		f.cycleEffortDefault(delta)

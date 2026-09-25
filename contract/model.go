@@ -99,7 +99,9 @@ const (
 
 // ReasoningToggleDialect names the wire shape of a boolean thinking switch. Toggle models cannot
 // share one field: gateways disagree on both the field name and the value shape (survey in
-// docs/architecture.md §4), so the model object pins the dialect it speaks.
+// docs/architecture.md §4), so the model object pins the dialect it speaks. No de-facto standard
+// exists — the preset pool covers every shape observed in the wild, and ToggleDialectCustom is
+// the escape hatch for the next one.
 type ReasoningToggleDialect string
 
 const (
@@ -110,13 +112,35 @@ const (
 	// ToggleDialectThink sends top-level "think": true|false — Ollama and its gateways.
 	ToggleDialectThink ReasoningToggleDialect = "think"
 
-	// ToggleDialectThinkingType sends "thinking": {"type": "enabled"|"disabled"} — Zhipu/GLM.
+	// ToggleDialectThinkingType sends "thinking": {"type": "enabled"|"disabled"} — Zhipu/GLM
+	// and DeepSeek.
 	ToggleDialectThinkingType ReasoningToggleDialect = "thinking-type"
+
+	// ToggleDialectChatTemplateEnableThinking sends
+	// "chat_template_kwargs": {"enable_thinking": true|false} — vLLM/SGLang serving Qwen3,
+	// Gemma and other template-gated models.
+	ToggleDialectChatTemplateEnableThinking ReasoningToggleDialect = "chat-template-enable-thinking"
+
+	// ToggleDialectChatTemplateThinking sends
+	// "chat_template_kwargs": {"thinking": true|false} — vLLM serving Granite, DeepSeek-V3.1,
+	// Holo2 (same escape hatch, different template parameter).
+	ToggleDialectChatTemplateThinking ReasoningToggleDialect = "chat-template-thinking"
+
+	// ToggleDialectReasoningEnabled sends "reasoning": {"enabled": true|false} — OpenRouter's
+	// unified reasoning object (its boolean arm; the effort arm belongs to ReasoningKindEffort).
+	ToggleDialectReasoningEnabled ReasoningToggleDialect = "reasoning-enabled"
+
+	// ToggleDialectCustom sends a boolean at the user-named wire field (ToggleField, dots
+	// nest: "a.b" -> {"a": {"b": true|false}}) — for gateways not in the preset pool.
+	ToggleDialectCustom ReasoningToggleDialect = "custom"
 )
 
-// ReasoningToggleDialects lists every dialect in cycle order (the TUI choice pool).
+// ReasoningToggleDialects lists every dialect in cycle order (the TUI choice pool): known wire
+// shapes first, the custom escape hatch last.
 var ReasoningToggleDialects = [...]ReasoningToggleDialect{
 	ToggleDialectEnableThinking, ToggleDialectThink, ToggleDialectThinkingType,
+	ToggleDialectChatTemplateEnableThinking, ToggleDialectChatTemplateThinking,
+	ToggleDialectReasoningEnabled, ToggleDialectCustom,
 }
 
 // Reasoning is the model's thinking-control capability declaration: what the endpoint accepts
@@ -125,6 +149,7 @@ var ReasoningToggleDialects = [...]ReasoningToggleDialect{
 type Reasoning struct {
 	Kind          ReasoningKind          // how the endpoint accepts control, see ReasoningKind
 	ToggleDialect ReasoningToggleDialect // kind=toggle: which switch shape to send, see ReasoningToggleDialect
+	ToggleField   string                 // kind=toggle + custom dialect: wire field path (dots nest)
 	Efforts       []string               // kind=effort: supported presets (non-empty, no duplicates)
 	Default       string                 // kind=effort: one of Efforts; kind=toggle: ReasoningToggleOn/Off
 }
@@ -133,8 +158,8 @@ type Reasoning struct {
 func (r Reasoning) Validate() error {
 	switch r.Kind {
 	case ReasoningKindNone:
-		if len(r.Efforts) != 0 || r.Default != "" || r.ToggleDialect != "" {
-			return fmt.Errorf("reasoning: kind %q must not set Efforts/Default/ToggleDialect", r.Kind)
+		if len(r.Efforts) != 0 || r.Default != "" || r.ToggleDialect != "" || r.ToggleField != "" {
+			return fmt.Errorf("reasoning: kind %q must not set Efforts/Default/ToggleDialect/ToggleField", r.Kind)
 		}
 	case ReasoningKindToggle:
 		if len(r.Efforts) != 0 {
@@ -146,8 +171,15 @@ func (r Reasoning) Validate() error {
 		if !isToggleDialect(r.ToggleDialect) {
 			return fmt.Errorf("reasoning: toggle dialect %q is unknown", r.ToggleDialect)
 		}
+		if r.ToggleDialect == ToggleDialectCustom {
+			if err := validateToggleField(r.ToggleField); err != nil {
+				return err
+			}
+		} else if r.ToggleField != "" {
+			return fmt.Errorf("reasoning: ToggleField is only set for the %q dialect", ToggleDialectCustom)
+		}
 	case ReasoningKindEffort:
-		if r.ToggleDialect != "" {
+		if r.ToggleDialect != "" || r.ToggleField != "" {
 			return fmt.Errorf("reasoning: effort kind takes no toggle dialect")
 		}
 		if len(r.Efforts) == 0 {
@@ -168,6 +200,20 @@ func (r Reasoning) Validate() error {
 		}
 	default:
 		return fmt.Errorf("reasoning: unknown kind %q", r.Kind)
+	}
+	return nil
+}
+
+// validateToggleField checks the custom switch field path: a non-empty dotted path whose every
+// segment is non-empty ("a.b" nests, "a." and ".b" are mistakes).
+func validateToggleField(field string) error {
+	if field == "" {
+		return fmt.Errorf("reasoning: custom toggle dialect needs ToggleField")
+	}
+	for _, seg := range strings.Split(field, ".") {
+		if seg == "" {
+			return fmt.Errorf("reasoning: ToggleField %q has an empty path segment", field)
+		}
 	}
 	return nil
 }

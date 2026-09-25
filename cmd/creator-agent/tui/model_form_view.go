@@ -138,8 +138,13 @@ func reasoningSummaryRows(p contract.Params) []struct{ label, value string } {
 	}
 	switch p.Reasoning.Kind {
 	case contract.ReasoningKindToggle:
+		dialect := dialectValueLabel(p.Reasoning.ToggleDialect)
+		if p.Reasoning.ToggleDialect == contract.ToggleDialectCustom {
+			// The custom switch shows the user-named wire field — that is what must match the gateway.
+			dialect += " " + orDash(p.Reasoning.ToggleField)
+		}
 		rows = append(rows, struct{ label, value string }{
-			i18n.T("model_form.field.toggle_dialect"), dialectValueLabel(p.Reasoning.ToggleDialect),
+			i18n.T("model_form.field.toggle_dialect"), dialect,
 		})
 		rows = append(rows, struct{ label, value string }{
 			i18n.T("model_form.field.thinking_switch"), toggleValueLabel(p.Reasoning.Default),
@@ -182,6 +187,8 @@ func formLabel(k modelFormField) string {
 		return i18n.T("model_form.field.reasoning_default")
 	case formFieldToggleDialect:
 		return i18n.T("model_form.field.toggle_dialect")
+	case formFieldToggleCustom:
+		return i18n.T("model_form.field.toggle_custom")
 	case formFieldReasoningKeyChoice:
 		return i18n.T("model_form.field.reasoning_key")
 	case formFieldReasoningKeyCustom:
@@ -208,6 +215,8 @@ func formHint(k modelFormField) string {
 		return i18n.T("model_form.hint.api_key")
 	case formFieldReasoningKeyCustom:
 		return i18n.T("model_form.hint.reasoning_key_custom")
+	case formFieldToggleCustom:
+		return i18n.T("model_form.hint.toggle_custom")
 	}
 	return ""
 }
@@ -260,7 +269,7 @@ func reasoningEntrySummary(f *modelFormState) string {
 	case contract.ReasoningKindEffort:
 		return sw + " · " + kindValueLabel(r.Kind) + " " + r.Default + " [" + strings.Join(r.Efforts, "/") + "]"
 	case contract.ReasoningKindToggle:
-		return sw + " · " + kindValueLabel(r.Kind) + " " + string(r.ToggleDialect)
+		return sw + " · " + kindValueLabel(r.Kind) + " " + dialectWireName(r)
 	}
 	return sw + " · " + kindValueLabel(r.Kind)
 }
@@ -301,7 +310,7 @@ func kindValueLabel(k contract.ReasoningKind) string {
 }
 
 // dialectValueLabel localizes a toggle dialect (the wire name stays visible — that is what the
-// user must match to their gateway). The empty dialect is "not used".
+// user must match to their gateway). The empty dialect is the recommended "not sent" default.
 func dialectValueLabel(d contract.ReasoningToggleDialect) string {
 	switch d {
 	case contract.ToggleDialectThink:
@@ -310,8 +319,25 @@ func dialectValueLabel(d contract.ReasoningToggleDialect) string {
 		return i18n.T("model_form.value.dialect.thinking_type")
 	case contract.ToggleDialectEnableThinking:
 		return i18n.T("model_form.value.dialect.enable_thinking")
+	case contract.ToggleDialectChatTemplateEnableThinking:
+		return i18n.T("model_form.value.dialect.chat_template_enable_thinking")
+	case contract.ToggleDialectChatTemplateThinking:
+		return i18n.T("model_form.value.dialect.chat_template_thinking")
+	case contract.ToggleDialectReasoningEnabled:
+		return i18n.T("model_form.value.dialect.reasoning_enabled")
+	case contract.ToggleDialectCustom:
+		return i18n.T("model_form.value.dialect.custom")
 	}
 	return i18n.T("model_form.value.dialect.none")
+}
+
+// dialectWireName names the toggle dialect as it lands on the wire: the custom dialect shows the
+// user-named field (that is what must match the gateway), presets show their wire shape.
+func dialectWireName(r contract.Reasoning) string {
+	if r.ToggleDialect == contract.ToggleDialectCustom && r.ToggleField != "" {
+		return r.ToggleField
+	}
+	return string(r.ToggleDialect)
 }
 
 // reasoningKeyLabel localizes the reasoning-content wire-field choice: the empty key is the

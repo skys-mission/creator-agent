@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/openai/openai-go"
@@ -142,33 +143,59 @@ func buildParams(modelID string, req *contract.ModelRequest, echoKey string, rea
 	return out, nil
 }
 
-// reasoningRequestOptions maps kind=toggle onto the gateway's switch field. There is no standard
-// boolean on this protocol — the three surveyed dialects (docs/architecture.md §4) disagree on
-// both the field name and the value shape, hence dialects instead of one universal field:
+// toggleWirePaths maps the boolean-shaped toggle dialects onto their dotted wire path. Dots
+// nest ("a.b" -> {"a": {"b": ...}}). The surveyed shapes (docs/architecture.md §4) disagree on
+// both the field name and the nesting, hence dialects instead of one universal field:
 //
 //	enable_thinking: true|false                    DashScope/Qwen and most CN-compatible gateways
 //	think: true|false                              Ollama and its gateways
-//	thinking: {"type": "enabled"|"disabled"}       Zhipu/GLM
+//	chat_template_kwargs.enable_thinking           vLLM/SGLang serving Qwen3, Gemma
+//	chat_template_kwargs.thinking                  vLLM serving Granite, DeepSeek-V3.1, Holo2
+//	reasoning.enabled                              OpenRouter's reasoning object, boolean arm
 //
+// ToggleDialectThinkingType is not boolean-shaped and stays in reasoningRequestOptions itself.
+var toggleWirePaths = map[contract.ReasoningToggleDialect]string{
+	contract.ToggleDialectEnableThinking:             "enable_thinking",
+	contract.ToggleDialectThink:                      "think",
+	contract.ToggleDialectChatTemplateEnableThinking: "chat_template_kwargs.enable_thinking",
+	contract.ToggleDialectChatTemplateThinking:       "chat_template_kwargs.thinking",
+	contract.ToggleDialectReasoningEnabled:           "reasoning.enabled",
+}
+
+// reasoningRequestOptions maps kind=toggle onto the gateway's switch field (see toggleWirePaths
+// for the surveyed shapes; ToggleDialectCustom sends a boolean at the user-named path).
 // kind=effort needs no options (buildParams carries reasoning_effort); kind=none sends nothing.
 func reasoningRequestOptions(r contract.Reasoning) []option.RequestOption {
 	if r.Kind != contract.ReasoningKindToggle {
 		return nil
 	}
 	on := r.Default == contract.ReasoningToggleOn
-	switch r.ToggleDialect {
-	case contract.ToggleDialectEnableThinking:
-		return []option.RequestOption{option.WithJSONSet("enable_thinking", on)}
-	case contract.ToggleDialectThink:
-		return []option.RequestOption{option.WithJSONSet("think", on)}
-	case contract.ToggleDialectThinkingType:
+	if r.ToggleDialect == contract.ToggleDialectThinkingType {
 		typ := "disabled"
 		if on {
 			typ = "enabled"
 		}
 		return []option.RequestOption{option.WithJSONSet("thinking", map[string]any{"type": typ})}
 	}
-	return nil
+	path := r.ToggleField
+	if r.ToggleDialect != contract.ToggleDialectCustom {
+		path = toggleWirePaths[r.ToggleDialect]
+	}
+	return boolFieldOptions(path, on)
+}
+
+// boolFieldOptions sends on/off as a boolean at the given dotted wire path. An empty or unknown
+// path sends nothing rather than a stray field: a wrong switch 400s some gateways.
+func boolFieldOptions(path string, on bool) []option.RequestOption {
+	if path == "" {
+		return nil
+	}
+	parts := strings.Split(path, ".")
+	v := any(on)
+	for i := len(parts) - 1; i > 0; i-- {
+		v = map[string]any{parts[i]: v}
+	}
+	return []option.RequestOption{option.WithJSONSet(parts[0], v)}
 }
 
 // messageParam maps one conversation message. Request-side fields with no home in this protocol
