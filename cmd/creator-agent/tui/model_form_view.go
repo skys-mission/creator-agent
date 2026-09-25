@@ -20,8 +20,13 @@ func drawModelForm(a *App) {
 	w, h := a.screen.Size()
 	boxW := mini(w-4, 72)
 	// The row list is dynamic (page- and state-dependent), so the box grows with it. Layout
-	// needs rows + 6: title/blank above, err + footer + border below.
-	needed := len(formRows(&a.modelForm)) + 6
+	// needs rows + 6: title/blank above, err + footer + border below. The confirm page draws a
+	// different row set than the editable pages — size to what is actually shown.
+	nRows := len(formRows(&a.modelForm))
+	if a.modelForm.confirm {
+		nRows = len(confirmRows(a.modelForm.build()))
+	}
+	needed := nRows + 6
 	boxH := mini(h-2, needed)
 	if boxW < 34 || boxH < needed {
 		// Too small to lay out the field rows; show a hint and bail on layout.
@@ -106,10 +111,10 @@ func drawModelFormFields(a *App, box *Surface, boxX, boxY, innerX, innerW int) {
 	}
 }
 
-// drawModelFormConfirm draws the review page: one label: value row per field, with the API key
-// masked (maskKey reveals only the last 4 runes) and the reasoning declaration summarized.
-func drawModelFormConfirm(a *App, box *Surface, innerX, innerW int) {
-	m := a.modelForm.build()
+// confirmRows assembles the review-page rows: identity fields (API key masked) plus the
+// reasoning declaration summary. Shared by layout sizing and drawing — the box must fit every
+// row or the tail gets clipped.
+func confirmRows(m contract.Model) []struct{ label, value string } {
 	keyVal := orDash("")
 	if m.APIKey != "" {
 		keyVal = maskKey(m.APIKey)
@@ -121,7 +126,13 @@ func drawModelFormConfirm(a *App, box *Surface, innerX, innerW int) {
 		{formLabel(formFieldModelID), m.ModelID},
 		{formLabel(formFieldAPIKey), keyVal},
 	}
-	rows = append(rows, reasoningSummaryRows(m.Params)...)
+	return append(rows, reasoningSummaryRows(m.Params)...)
+}
+
+// drawModelFormConfirm draws the review page: one label: value row per field, with the API key
+// masked (maskKey reveals only the last 4 runes) and the reasoning declaration summarized.
+func drawModelFormConfirm(a *App, box *Surface, innerX, innerW int) {
+	rows := confirmRows(a.modelForm.build())
 	box.DrawPlain(innerX, 2, i18n.T("model_form.confirm.prompt"), styleToolDim())
 	for i, r := range rows {
 		line := r.label + ": " + r.value
@@ -159,10 +170,15 @@ func reasoningSummaryRows(p contract.Params) []struct{ label, value string } {
 		})
 	}
 	rows = append(rows, struct{ label, value string }{
-		i18n.T("model_form.field.reasoning_key"), reasoningKeyLabel(p.ReasoningKey),
+		i18n.T("model_form.field.reasoning_key_in"),
+		keyValueLabel(p.ReasoningKeyIn, i18n.T("model_form.value.key.auto")),
 	})
 	rows = append(rows, struct{ label, value string }{
 		i18n.T("model_form.field.thinking_echo"), echoValueLabel(p.ThinkingEcho),
+	})
+	rows = append(rows, struct{ label, value string }{
+		i18n.T("model_form.field.reasoning_key_out"),
+		keyValueLabel(p.ReasoningKeyOut, i18n.T("model_form.value.key.echo_as_received")),
 	})
 	return rows
 }
@@ -194,9 +210,11 @@ func formLabel(k modelFormField) string {
 		return i18n.T("model_form.field.toggle_on_val")
 	case formFieldToggleOffValue:
 		return i18n.T("model_form.field.toggle_off_val")
-	case formFieldReasoningKeyChoice:
-		return i18n.T("model_form.field.reasoning_key")
-	case formFieldReasoningKeyCustom:
+	case formFieldReasoningKeyInChoice:
+		return i18n.T("model_form.field.reasoning_key_in")
+	case formFieldReasoningKeyOutChoice:
+		return i18n.T("model_form.field.reasoning_key_out")
+	case formFieldReasoningKeyInCustom, formFieldReasoningKeyOutCustom:
 		return i18n.T("model_form.field.reasoning_key_custom")
 	case formFieldThinkingEcho:
 		return i18n.T("model_form.field.thinking_echo")
@@ -218,7 +236,7 @@ func formHint(k modelFormField) string {
 		return i18n.T("model_form.hint.model_id")
 	case formFieldAPIKey:
 		return i18n.T("model_form.hint.api_key")
-	case formFieldReasoningKeyCustom:
+	case formFieldReasoningKeyInCustom, formFieldReasoningKeyOutCustom:
 		return i18n.T("model_form.hint.reasoning_key_custom")
 	case formFieldToggleCustom:
 		return i18n.T("model_form.hint.toggle_custom")
@@ -245,8 +263,12 @@ func formDisplay(f *modelFormState, k modelFormField) (text string, isHint bool,
 		return reasoningEntrySummary(f), false, false
 	case formFieldToggleDialect:
 		return dialectValueLabel(f.dialect()), false, false
-	case formFieldReasoningKeyChoice:
-		return reasoningKeyLabel(reasoningKeyChoices()[f.reasoningKeyIdx]), false, false
+	case formFieldReasoningKeyInChoice:
+		return keyChoiceLabel(f.reasoningKeyInIdx, f.reasoningKeyInCustom.Value(),
+			i18n.T("model_form.value.key.auto")), false, false
+	case formFieldReasoningKeyOutChoice:
+		return keyChoiceLabel(f.reasoningKeyOutIdx, f.reasoningKeyOutCustom.Value(),
+			i18n.T("model_form.value.key.echo_as_received")), false, false
 	case formFieldReasoningDefault:
 		if f.effortDefaultIdx < 0 {
 			return orDash(""), false, false
@@ -348,6 +370,35 @@ func dialectWireName(r contract.Reasoning) string {
 		return r.ToggleField + "=" + orDash(r.ToggleOnValue) + "/" + orDash(r.ToggleOffValue)
 	}
 	return string(r.ToggleDialect)
+}
+
+// keyChoiceLabel renders a wire-field choice row: the pinned preset name, the custom text, or
+// the direction's default label (inbound "auto", outbound "as received").
+func keyChoiceLabel(idx int, custom, defLabel string) string {
+	if idx == reasoningKeyCustomIdx {
+		if v := strings.TrimSpace(custom); v != "" {
+			return v
+		}
+		return i18n.T("model_form.value.key.custom")
+	}
+	if idx > 0 {
+		return reasoningKeyLabel(reasoningKeyChoices()[idx])
+	}
+	return defLabel
+}
+
+// keyValueLabel renders a stored wire-field value: the direction's default label when empty, the
+// preset label for known names, else the custom name.
+func keyValueLabel(key, defLabel string) string {
+	if key == "" {
+		return defLabel
+	}
+	for _, k := range reasoningKeyChoices() {
+		if k == key {
+			return reasoningKeyLabel(key)
+		}
+	}
+	return key
 }
 
 // reasoningKeyLabel localizes the reasoning-content wire-field choice: the empty key is the

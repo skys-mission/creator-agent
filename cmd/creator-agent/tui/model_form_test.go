@@ -106,7 +106,7 @@ func TestModelFormWalkthroughCreatesModel(t *testing.T) {
 		BaseURL:  "https://example.com/v1",
 		ModelID:  "m1",
 		APIKey:   "sk-test-abcd1234",
-		Params:   contract.Params{ThinkingEcho: contract.ThinkingEchoOff, ReasoningKey: "reasoning"},
+		Params:   contract.Params{ThinkingEcho: contract.ThinkingEchoOff, ReasoningKeyIn: "reasoning"},
 	}
 	got := a.models.load()
 	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -265,9 +265,10 @@ func TestModelFormChoiceFieldsCycle(t *testing.T) {
 	}
 
 	openReasoning(t, a)
-	// Rows with the switch off: switch, reasoning field, thinking echo.
+	// Rows with the switch off: switch, inbound field, thinking echo, outbound field (echo on).
 	if got := formRows(&a.modelForm); !reflect.DeepEqual(got, []modelFormField{
-		formFieldThinkingSwitch, formFieldReasoningKeyChoice, formFieldThinkingEcho,
+		formFieldThinkingSwitch, formFieldReasoningKeyInChoice, formFieldThinkingEcho,
+		formFieldReasoningKeyOutChoice,
 	}) {
 		t.Fatalf("reasoning rows (switch off) = %v", got)
 	}
@@ -304,9 +305,9 @@ func TestModelFormSwitchRevealsLevelRows(t *testing.T) {
 	if got := a.modelForm.buildReasoning(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("seeded reasoning = %+v, want %+v", got, want)
 	}
-	// Rows grow to switch + 7 presets + default + dialect + wire field + echo.
-	if got := len(formRows(&a.modelForm)); got != 12 {
-		t.Fatalf("reasoning rows (switch on) = %d, want 12", got)
+	// Rows grow to switch + 7 presets + default + dialect + inbound field + echo + outbound field.
+	if got := len(formRows(&a.modelForm)); got != 13 {
+		t.Fatalf("reasoning rows (switch on) = %d, want 13", got)
 	}
 
 	// The rows render as checkable presets (never any key material).
@@ -587,35 +588,120 @@ func TestModelFormReasoningKeyPresets(t *testing.T) {
 	a, _ := newModelFormApp(t)
 	openForm(t, a)
 	openReasoning(t, a)
-	injectKey(a, KeyTab) // -> reasoning field choice
+	injectKey(a, KeyTab) // -> inbound field choice
 
 	wantKeys := []string{"", "reasoning_content", "reasoning_details", "reasoning", "reasoning_text"}
 	for i, want := range wantKeys {
-		if got := a.modelForm.build().Params.ReasoningKey; got != want {
-			t.Fatalf("cycle %d: ReasoningKey = %q, want %q", i, got, want)
+		if got := a.modelForm.build().Params.ReasoningKeyIn; got != want {
+			t.Fatalf("cycle %d: ReasoningKeyIn = %q, want %q", i, got, want)
 		}
 		injectKey(a, KeyRight)
 	}
 	// The last preset is the custom entry: its text row appears and feeds the wire key.
-	if a.modelForm.reasoningKeyIdx != reasoningKeyCustomIdx {
-		t.Fatalf("reasoningKeyIdx = %d, want the custom preset", a.modelForm.reasoningKeyIdx)
+	if a.modelForm.reasoningKeyInIdx != reasoningKeyCustomIdx {
+		t.Fatalf("reasoningKeyInIdx = %d, want the custom preset", a.modelForm.reasoningKeyInIdx)
 	}
-	if rows := formRows(&a.modelForm); rows[2] != formFieldReasoningKeyCustom {
+	if rows := formRows(&a.modelForm); rows[2] != formFieldReasoningKeyInCustom {
 		t.Fatalf("rows = %v, want the custom key row after the choice row", rows)
 	}
 	injectKey(a, KeyTab) // -> custom text row
 	typeText(a, "my_think")
-	if got := a.modelForm.build().Params.ReasoningKey; got != "my_think" {
-		t.Fatalf("ReasoningKey = %q, want my_think", got)
+	if got := a.modelForm.build().Params.ReasoningKeyIn; got != "my_think" {
+		t.Fatalf("ReasoningKeyIn = %q, want my_think", got)
 	}
 	// Leaving the custom preset hides the text row again and keeps the focus on the choice row.
-	a.modelForm.focus = formFieldReasoningKeyChoice
+	a.modelForm.focus = formFieldReasoningKeyInChoice
 	injectKey(a, KeyLeft) // custom -> reasoning_text
-	if got := formRows(&a.modelForm); len(got) != 3 || got[1] != formFieldReasoningKeyChoice {
+	if got := formRows(&a.modelForm); len(got) != 4 || got[1] != formFieldReasoningKeyInChoice {
 		t.Fatalf("rows = %v, want the custom row gone", got)
 	}
-	if a.modelForm.focus != formFieldReasoningKeyChoice {
+	if a.modelForm.focus != formFieldReasoningKeyInChoice {
 		t.Fatalf("focus = %v, want the choice row", a.modelForm.focus)
+	}
+}
+
+func TestModelFormEchoFieldIsolation(t *testing.T) {
+	// Inbound and outbound configure independently ("read wide, write narrow" is expressible),
+	// and the outbound rows exist only while the echo is on — with the state surviving the
+	// toggle.
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a)
+	f := &a.modelForm
+
+	injectKey(a, KeyTab)   // -> inbound field choice
+	injectKey(a, KeyRight) // auto -> reasoning_content
+	injectKey(a, KeyRight) // -> reasoning_details
+	injectKey(a, KeyRight) // -> reasoning
+	injectKey(a, KeyTab)   // -> thinking echo
+	injectKey(a, KeyTab)   // -> outbound field choice
+	injectKey(a, KeyRight) // as received -> reasoning_content
+	got := f.build().Params
+	if got.ReasoningKeyIn != "reasoning" || got.ReasoningKeyOut != "reasoning_content" {
+		t.Fatalf("keys = in %q out %q, want them independently set", got.ReasoningKeyIn, got.ReasoningKeyOut)
+	}
+
+	// Echo off: the outbound rows disappear but the configured value survives.
+	f.focus = formFieldThinkingEcho
+	injectKey(a, KeyRight)
+	if f.echoOn() {
+		t.Fatal("echo still on after Right")
+	}
+	for _, r := range formRows(f) {
+		if r == formFieldReasoningKeyOutChoice || r == formFieldReasoningKeyOutCustom {
+			t.Fatalf("rows = %v, want the outbound rows hidden while echo is off", formRows(f))
+		}
+	}
+	if got := f.build().Params.ReasoningKeyOut; got != "reasoning_content" {
+		t.Fatalf("ReasoningKeyOut = %q, want the configured value to survive the toggle", got)
+	}
+	// Echo on again: the outbound row comes back with its configuration.
+	injectKey(a, KeyRight)
+	found := false
+	for _, r := range formRows(f) {
+		if r == formFieldReasoningKeyOutChoice {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rows = %v, want the outbound row back", formRows(f))
+	}
+	if got := f.build().Params.ReasoningKeyOut; got != "reasoning_content" {
+		t.Fatalf("ReasoningKeyOut = %q, want reasoning_content", got)
+	}
+}
+
+func TestModelFormSpaceCyclesChoices(t *testing.T) {
+	// Space is a second "next value" key on choice rows (←→ also cycles); in text fields it is
+	// an ordinary space character.
+	a, _ := newModelFormApp(t)
+	openForm(t, a)
+	openReasoning(t, a) // focus: thinking switch
+
+	injectRune(a, ' ') // space toggles the switch like Right does
+	if !a.modelForm.switchOn {
+		t.Fatal("space did not toggle the thinking switch")
+	}
+	injectRune(a, ' ')
+	if a.modelForm.switchOn {
+		t.Fatal("space did not toggle the thinking switch back")
+	}
+
+	injectKey(a, KeyTab) // -> inbound field choice
+	injectRune(a, ' ')   // auto -> reasoning_content
+	if got := a.modelForm.build().Params.ReasoningKeyIn; got != "reasoning_content" {
+		t.Fatalf("ReasoningKeyIn = %q, want reasoning_content (space must cycle)", got)
+	}
+
+	// Space inside a text field stays a space character (the custom row takes free text).
+	injectKey(a, KeyRight) // reasoning_content -> reasoning_details
+	injectKey(a, KeyRight) // -> reasoning
+	injectKey(a, KeyRight) // -> reasoning_text
+	injectKey(a, KeyRight) // -> custom
+	injectKey(a, KeyTab)   // -> custom text row
+	typeText(a, "my key")
+	if got := a.modelForm.build().Params.ReasoningKeyIn; got != "my key" {
+		t.Fatalf("ReasoningKeyIn = %q, want %q (space must type, not cycle)", got, "my key")
 	}
 }
 
@@ -679,8 +765,10 @@ func TestModelFormConfirmShowsReasoningSummary(t *testing.T) {
 		i18n.T("model_form.value.kind.effort"),
 		"low, medium, high",
 		contract.ReasoningEffortMedium,
-		i18n.T("model_form.field.reasoning_key"),
+		i18n.T("model_form.field.reasoning_key_in"),
 		i18n.T("model_form.value.key.auto"),
+		i18n.T("model_form.field.reasoning_key_out"),
+		i18n.T("model_form.value.key.echo_as_received"),
 	} {
 		if !strings.Contains(dump, want) {
 			t.Fatalf("confirm page missing %q:\n%s", want, dump)

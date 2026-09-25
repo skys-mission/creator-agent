@@ -21,7 +21,8 @@ func New(m contract.Model) (ModelClient, error) {
 			ModelID:             m.ModelID,
 			APIKey:              m.APIKey,
 			DisableThinkingEcho: m.Params.ThinkingEcho == contract.ThinkingEchoOff,
-			ReasoningKey:        m.Params.ReasoningKey,
+			ReasoningKeyIn:      m.Params.ReasoningKeyIn,
+			ReasoningKeyOut:     m.Params.ReasoningKeyOut,
 			Reasoning:           m.Params.Reasoning,
 		})
 	default:

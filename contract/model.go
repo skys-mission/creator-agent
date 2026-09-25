@@ -258,12 +258,17 @@ func isToggleDialect(d ReasoningToggleDialect) bool {
 // dialect.
 type Params struct {
 	ThinkingEcho ThinkingEchoMode // thinking history round-trip, see ThinkingEchoMode ("" == on)
-	// ReasoningKey pins the wire field name for reasoning content (non-standard gateways).
-	// Empty means smart adaptation (the recommended default): inbound accepts every known
-	// dialect and outbound echoes whichever key the endpoint itself spoke — the ecosystem
-	// never standardized the field (survey in docs/architecture.md §4).
-	ReasoningKey string
-	Reasoning    Reasoning // thinking-depth control capability + default, see Reasoning
+	// ReasoningKeyIn pins the wire field name reasoning content is READ from (non-standard
+	// gateways). Empty means smart adaptation (the recommended default): every known inbound
+	// dialect is accepted — the ecosystem never standardized the field (survey in
+	// docs/architecture.md §4).
+	ReasoningKeyIn string
+	// ReasoningKeyOut pins the wire field name assistant thinking is echoed INTO on outbound
+	// history (only meaningful while ThinkingEcho is on). Empty means "reply in the dialect the
+	// endpoint spoke" (the recommended default): the key reasoning was last observed under.
+	// Inbound and outbound configure independently — a model may read wide and write narrow.
+	ReasoningKeyOut string
+	Reasoning       Reasoning // thinking-depth control capability + default, see Reasoning
 }
 
 // Model is a configured model endpoint: one value object per configured endpoint, created by the

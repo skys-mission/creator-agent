@@ -430,8 +430,11 @@ func TestStreamEchoControlsHistory(t *testing.T) {
 		t.Fatal("DisableThinkingEcho must keep thinking out of history")
 	}
 }
-func TestStreamReasoningKeyPin(t *testing.T) {
-	srv, _ := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestStreamPinnedInboundKey(t *testing.T) {
+	// A pinned inbound key consults nothing else (the endpoint's `reasoning_content` is ignored)
+	// and, with outbound left as "as received", the echo rides the pinned key too. Whitespace
+	// around the pin is trimmed.
+	srv, seen := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
 		flusher, _ := w.(http.Flusher)
 		writeSSE(w, flusher,
 			testChunkPrefix+`"choices":[{"index":0,"delta":{"my_think":"pinned thought"}}]}`,
@@ -440,7 +443,7 @@ func TestStreamReasoningKeyPin(t *testing.T) {
 			`[DONE]`,
 		)
 	})
-	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL, ReasoningKey: " my_think "})
+	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL, ReasoningKeyIn: " my_think "})
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
@@ -454,6 +457,15 @@ func TestStreamReasoningKeyPin(t *testing.T) {
 	want := []string{"think:pinned thought", "text:answer", "finish:stop"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (pinned key must be the only consulted key)", got, want)
+	}
+	// Outbound left as "as received": the echo rides the pinned inbound key.
+	ch2, err := c.Stream(context.Background(), assistantHistory)
+	if err != nil {
+		t.Fatalf("Stream() = %v", err)
+	}
+	collect(t, ch2, 5*time.Second)
+	if keys := echoedKeys(t, seen.body); len(keys) != 1 || keys[0] != "my_think" {
+		t.Fatalf("echoed keys = %v, want [my_think]", keys)
 	}
 }
 
@@ -547,30 +559,35 @@ func TestStreamLearnsReasoningDialect(t *testing.T) {
 	}
 }
 
-func TestStreamPinnedKeyDisablesLearning(t *testing.T) {
-	// A pinned key consults nothing else inbound and always wins outbound, even though the
-	// endpoint speaks a different dialect.
+func TestStreamPinnedOutboundKeyWins(t *testing.T) {
+	// A pinned outbound key overrides the learned dialect: the endpoint speaks `reasoning` and
+	// inbound still reads it wide, but the echo must land under the pinned key ("read wide,
+	// write narrow").
 	srv, seen := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
 		flusher, _ := w.(http.Flusher)
 		writeSSE(w, flusher,
-			testChunkPrefix+`"choices":[{"index":0,"delta":{"reasoning_content":"not mine"}}]}`,
+			testChunkPrefix+`"choices":[{"index":0,"delta":{"reasoning":"thought"}}]}`,
+			testChunkPrefix+`"choices":[{"index":0,"delta":{"content":"answer"}}]}`,
 			`[DONE]`,
 		)
 	})
-	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL, ReasoningKey: "my_think"})
+	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL, ReasoningKeyOut: "my_think"})
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	ch, err := c.Stream(context.Background(), assistantHistory)
-	if err != nil {
-		t.Fatalf("Stream() = %v", err)
+	run := func(req *contract.ModelRequest) {
+		t.Helper()
+		ch, err := c.Stream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Stream() = %v", err)
+		}
+		collect(t, ch, 5*time.Second)
 	}
-	got := describe(collect(t, ch, 5*time.Second))
-	want := []string{"finish:stop"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("events = %v, want %v (pinned key must not consult reasoning_content)", got, want)
-	}
+	// Call 1 observes `reasoning` inbound (wide scan still on).
+	run(&contract.ModelRequest{Messages: []contract.Message{contract.UserMessage("hi")}})
+	// Call 2's echo must ride the pinned key, not the learned one.
+	run(assistantHistory)
 	if keys := echoedKeys(t, seen.body); len(keys) != 1 || keys[0] != "my_think" {
-		t.Fatalf("echoed keys = %v, want [my_think]", keys)
+		t.Fatalf("echoed keys = %v, want [my_think] (pinned outbound beats the learned dialect)", keys)
 	}
 }

@@ -248,7 +248,7 @@ func chunkFromJSON(t *testing.T, raw string) *openai.ChatCompletionChunk {
 }
 
 func TestStreamMapperTextAndUsage(t *testing.T) {
-	s := newStreamMapper(newReasoningDialect(""))
+	s := newStreamMapper(newReasoningDialect("", ""))
 	evs := s.Map(chunkFromJSON(t,
 		`{"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}`))
 	want := []contract.Event{contract.TextEvent{Delta: "Hel"}}
@@ -273,7 +273,7 @@ func TestStreamMapperTextAndUsage(t *testing.T) {
 }
 
 func TestStreamMapperToolCallFragments(t *testing.T) {
-	s := newStreamMapper(newReasoningDialect(""))
+	s := newStreamMapper(newReasoningDialect("", ""))
 	var got []contract.Event
 	for _, raw := range []string{
 		`{"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read","arguments":""}}]}}]}`,
@@ -296,7 +296,7 @@ func TestStreamMapperToolCallFragments(t *testing.T) {
 }
 
 func TestStreamMapperReasoningExtension(t *testing.T) {
-	s := newStreamMapper(newReasoningDialect(""))
+	s := newStreamMapper(newReasoningDialect("", ""))
 	evs := s.Map(chunkFromJSON(t,
 		`{"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"reasoning_content":"hmm","content":"answer"}}]}`))
 	want := []contract.Event{

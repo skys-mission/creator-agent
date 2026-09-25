@@ -3,13 +3,15 @@
 // endpoint through Config.BaseURL. Provider SDK types stop at this package boundary.
 //
 // Chain-of-thought handling follows the de-facto ecosystem standard (documented in
-// docs/architecture.md §4): inbound reasoning is always scanned across the known wire field set
+// docs/architecture.md §4): inbound reasoning is scanned across the known wire field set
 // (reasoning_content / reasoning_details / reasoning / reasoning_text), and assistant thinking is
 // echoed into outbound history under the dialect the endpoint itself spoke — learned per
-// endpoint from its responses, unless DisableThinkingEcho or a pinned ReasoningKey says
-// otherwise. Showing thinking to the user is a UI concern (the TUI has its own display mode).
-// Deliberately not handled yet: multimodal parts, sampling knobs; request-side thinking
-// enablement (reasoning_effort and friends) is dialect-specific and carried by Params.
+// endpoint from its responses. Inbound and outbound are configured independently
+// (Config.ReasoningKeyIn / Config.ReasoningKeyOut pin one side each); DisableThinkingEcho keeps
+// thinking out of outbound entirely. Showing thinking to the user is a UI concern (the TUI has
+// its own display mode). Deliberately not handled yet: multimodal parts, sampling knobs;
+// request-side thinking enablement (reasoning_effort and friends) is dialect-specific and
+// carried by Params.
 package openaichat
 
 import (
@@ -40,11 +42,13 @@ type Config struct {
 	// while some gateways require thinking in history. Inbound reasoning is always parsed and
 	// emitted — whether the user SEES it is the UI's concern, not the wire's.
 	DisableThinkingEcho bool
-	// ReasoningKey pins the wire field name for reasoning content (non-standard gateways),
-	// consulted for both inbound extraction and outbound echo, and disabling dialect learning.
-	// Empty means smart adaptation: the de-facto field scan inbound, and outbound echo under
-	// whatever key the endpoint itself spoke (learned per endpoint, see reasoningDialect).
-	ReasoningKey string
+	// ReasoningKeyIn pins the wire field name reasoning content is READ from (non-standard
+	// gateways). Empty means smart adaptation: scan the de-facto inbound field set.
+	ReasoningKeyIn string
+	// ReasoningKeyOut pins the wire field name thinking is echoed INTO on outbound history.
+	// Empty means "reply in the dialect the endpoint spoke" (see reasoningDialect). Only
+	// meaningful when the echo is enabled.
+	ReasoningKeyOut string
 	// Reasoning is the thinking-depth control declaration (kind + supported levels + default);
 	// see contract.Reasoning. kind=effort maps to reasoning_effort on this protocol.
 	Reasoning contract.Reasoning
@@ -64,7 +68,8 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ModelID == "" {
 		return nil, errors.New("openaichat: ModelID is required")
 	}
-	cfg.ReasoningKey = strings.TrimSpace(cfg.ReasoningKey)
+	cfg.ReasoningKeyIn = strings.TrimSpace(cfg.ReasoningKeyIn)
+	cfg.ReasoningKeyOut = strings.TrimSpace(cfg.ReasoningKeyOut)
 	base := cfg.BaseURL
 	if base == "" {
 		base = defaultBaseURL
@@ -77,12 +82,12 @@ func New(cfg Config) (*Client, error) {
 	if name == "" {
 		name = cfg.ModelID
 	}
-	return &Client{cfg: cfg, name: name, api: api, dialect: newReasoningDialect(cfg.ReasoningKey)}, nil
+	return &Client{cfg: cfg, name: name, api: api, dialect: newReasoningDialect(cfg.ReasoningKeyIn, cfg.ReasoningKeyOut)}, nil
 }
 
 // echoKey returns the wire key for echoing thinking into outbound history, or "" when the echo
-// is disabled. An explicit ReasoningKey pins the dialect; otherwise the key is what the endpoint
-// spoke (learned), falling back to the de-facto default before any observation.
+// is disabled. A pinned ReasoningKeyOut wins; otherwise the key is what the endpoint spoke
+// (learned), falling back to the pinned inbound key, then the de-facto default.
 func (c *Client) echoKey() string {
 	if c.cfg.DisableThinkingEcho {
 		return ""

@@ -16,7 +16,8 @@ import (
 // The dialog has three pages:
 //
 //	edit      — identity fields + one "reasoning settings" entry row
-//	reasoning — the second-level settings page (thinking switch, levels, dialect, wire key, echo)
+//	reasoning — the second-level settings page (thinking switch, levels, dialect, inbound wire
+//	            key, echo switch, outbound wire key — the directions configure independently)
 //	confirm   — review + create
 //
 // The thinking switch is a plain on/off control (never a kind cycle): turning it on reveals the
@@ -47,14 +48,16 @@ const (
 	formFieldEffortHigh
 	formFieldEffortXhigh
 	formFieldEffortMax
-	formFieldReasoningDefault   // default level among the supported ones
-	formFieldToggleDialect      // on/off-only gateway switch shape ("not sent" for effort models)
-	formFieldToggleCustom       // free-text wire field path for the custom switch dialect
-	formFieldToggleOnValue      // custom switch: wire value sent when on (JSON literal)
-	formFieldToggleOffValue     // custom switch: wire value sent when off (JSON literal)
-	formFieldReasoningKeyChoice // reasoning-content wire field: auto / preset / custom
-	formFieldReasoningKeyCustom // free-text wire field name for the custom preset
-	formFieldThinkingEcho       // thinking history round-trip
+	formFieldReasoningDefault      // default level among the supported ones
+	formFieldToggleDialect         // on/off-only gateway switch shape ("not sent" for effort models)
+	formFieldToggleCustom          // free-text wire field path for the custom switch dialect
+	formFieldToggleOnValue         // custom switch: wire value sent when on (JSON literal)
+	formFieldToggleOffValue        // custom switch: wire value sent when off (JSON literal)
+	formFieldReasoningKeyInChoice  // inbound reasoning wire field: auto / preset / custom
+	formFieldReasoningKeyInCustom  // free-text inbound wire field name for the custom preset
+	formFieldThinkingEcho          // thinking history round-trip (hides the outbound rows when off)
+	formFieldReasoningKeyOutChoice // outbound echo wire field: as received / preset / custom
+	formFieldReasoningKeyOutCustom // free-text outbound echo field name for the custom preset
 )
 
 // modelFormState is the create-model overlay state.
@@ -66,23 +69,25 @@ type modelFormState struct {
 	err           string // inline validation/save error; cleared on the next field move
 	effortsSeeded bool   // the effort presets were seeded once; off/on cycles must not re-seed
 
-	name               inputBuffer
-	baseURL            inputBuffer
-	modelID            inputBuffer
-	apiKey             inputBuffer
-	reasoningKeyCustom inputBuffer
-	toggleCustom       inputBuffer
-	toggleOnValue      inputBuffer
-	toggleOffValue     inputBuffer
+	name                  inputBuffer
+	baseURL               inputBuffer
+	modelID               inputBuffer
+	apiKey                inputBuffer
+	reasoningKeyInCustom  inputBuffer
+	reasoningKeyOutCustom inputBuffer
+	toggleCustom          inputBuffer
+	toggleOnValue         inputBuffer
+	toggleOffValue        inputBuffer
 
-	protocolIdx      int  // index into protocolChoices()
-	switchOn         bool // the standalone thinking switch
-	toggleDialectIdx int  // 0 = not sent; 1..n = contract.ReasoningToggleDialects[i-1]
-	toggleValsSeeded bool // the custom switch's on/off values were seeded once; edits must not be fought
-	effortsOn        [len(contract.ReasoningEfforts)]bool
-	effortDefaultIdx int // index into contract.ReasoningEfforts; -1 = nothing checked
-	reasoningKeyIdx  int // index into reasoningKeyChoices(); 0 = auto (smart adaptation)
-	echoIdx          int // index into echoChoices(); 0 = on (the default)
+	protocolIdx        int  // index into protocolChoices()
+	switchOn           bool // the standalone thinking switch
+	toggleDialectIdx   int  // 0 = not sent; 1..n = contract.ReasoningToggleDialects[i-1]
+	toggleValsSeeded   bool // the custom switch's on/off values were seeded once; edits must not be fought
+	effortsOn          [len(contract.ReasoningEfforts)]bool
+	effortDefaultIdx   int // index into contract.ReasoningEfforts; -1 = nothing checked
+	reasoningKeyInIdx  int // index into reasoningKeyChoices(); 0 = auto (smart adaptation)
+	reasoningKeyOutIdx int // index into reasoningKeyChoices(); 0 = as received (echo the observed key)
+	echoIdx            int // index into echoChoices(); 0 = on (the default)
 }
 
 // protocolChoices returns the selectable wire protocols. Only implemented protocols are offered:
@@ -96,16 +101,34 @@ func echoChoices() []contract.ThinkingEchoMode {
 	return []contract.ThinkingEchoMode{contract.ThinkingEchoOn, contract.ThinkingEchoOff}
 }
 
-// reasoningKeyChoices returns the reasoning-content wire-field presets in cycle order. The first
-// entry ("" = auto) is the recommended default: smart adaptation scans every known dialect
-// inbound and echoes the dialect the endpoint spoke. The rest pin one wire name; the last is the
-// custom free-text entry.
+// reasoningKeyChoices returns the reasoning-content wire-field presets in cycle order, shared by
+// the inbound and outbound rows. The first entry ("") is each direction's recommended default —
+// inbound: smart adaptation (scan every known dialect); outbound: reply as received (echo under
+// the key the endpoint spoke). The rest pin one wire name; the last is the custom free-text entry.
 func reasoningKeyChoices() []string {
 	return []string{"", "reasoning_content", "reasoning_details", "reasoning", "reasoning_text", "-"}
 }
 
 // reasoningKeyCustomIdx is the index of the custom (free-text) preset in reasoningKeyChoices().
 const reasoningKeyCustomIdx = 5
+
+// echoOn reports whether thinking history round-trip is enabled (the outbound rows only exist
+// while it is).
+func (f *modelFormState) echoOn() bool {
+	return echoChoices()[f.echoIdx] == contract.ThinkingEchoOn
+}
+
+// pickKey resolves a wire-field choice row: a preset name, the trimmed custom text, or "" (the
+// direction's default — see reasoningKeyChoices).
+func pickKey(idx int, custom string) string {
+	if idx == reasoningKeyCustomIdx {
+		return strings.TrimSpace(custom)
+	}
+	if idx > 0 {
+		return reasoningKeyChoices()[idx]
+	}
+	return ""
+}
 
 // openModelForm opens the create-model dialog with a fresh (defaulted) form.
 func openModelForm(a *App) {
@@ -156,11 +179,19 @@ func reasoningRows(f *modelFormState) []modelFormField {
 			rows = append(rows, formFieldToggleCustom, formFieldToggleOnValue, formFieldToggleOffValue)
 		}
 	}
-	rows = append(rows, formFieldReasoningKeyChoice)
-	if f.reasoningKeyIdx == reasoningKeyCustomIdx {
-		rows = append(rows, formFieldReasoningKeyCustom)
+	rows = append(rows, formFieldReasoningKeyInChoice)
+	if f.reasoningKeyInIdx == reasoningKeyCustomIdx {
+		rows = append(rows, formFieldReasoningKeyInCustom)
 	}
 	rows = append(rows, formFieldThinkingEcho)
+	if f.echoOn() {
+		// The outbound field is configurable only while the echo is on ("which name" is moot
+		// when nothing is sent); the state survives the toggle.
+		rows = append(rows, formFieldReasoningKeyOutChoice)
+		if f.reasoningKeyOutIdx == reasoningKeyCustomIdx {
+			rows = append(rows, formFieldReasoningKeyOutCustom)
+		}
+	}
 	return rows
 }
 
@@ -178,8 +209,8 @@ func (f *modelFormState) anyEffort() bool {
 func (f modelFormField) isText() bool {
 	switch f {
 	case formFieldProtocol, formFieldThinkingSwitch, formFieldReasoningDefault,
-		formFieldToggleDialect, formFieldReasoningKeyChoice, formFieldThinkingEcho,
-		formFieldReasoningEntry:
+		formFieldToggleDialect, formFieldReasoningKeyInChoice, formFieldReasoningKeyOutChoice,
+		formFieldThinkingEcho, formFieldReasoningEntry:
 		return false
 	}
 	if _, ok := f.effortIdx(); ok {
@@ -199,8 +230,10 @@ func (f *modelFormState) textBuf(k modelFormField) *inputBuffer {
 		return &f.modelID
 	case formFieldAPIKey:
 		return &f.apiKey
-	case formFieldReasoningKeyCustom:
-		return &f.reasoningKeyCustom
+	case formFieldReasoningKeyInCustom:
+		return &f.reasoningKeyInCustom
+	case formFieldReasoningKeyOutCustom:
+		return &f.reasoningKeyOutCustom
 	case formFieldToggleCustom:
 		return &f.toggleCustom
 	case formFieldToggleOnValue:
@@ -275,12 +308,6 @@ func (f *modelFormState) buildReasoning() contract.Reasoning {
 // build assembles the Model from the current fields. Choice fields always carry a value; text
 // fields are trimmed (a pasted secret never carries meaningful leading/trailing spaces).
 func (f *modelFormState) build() contract.Model {
-	key := ""
-	if f.reasoningKeyIdx == reasoningKeyCustomIdx {
-		key = strings.TrimSpace(f.reasoningKeyCustom.Value())
-	} else if f.reasoningKeyIdx > 0 {
-		key = reasoningKeyChoices()[f.reasoningKeyIdx]
-	}
 	return contract.Model{
 		Name:     strings.TrimSpace(f.name.Value()),
 		Protocol: protocolChoices()[f.protocolIdx],
@@ -288,9 +315,10 @@ func (f *modelFormState) build() contract.Model {
 		ModelID:  strings.TrimSpace(f.modelID.Value()),
 		APIKey:   strings.TrimSpace(f.apiKey.Value()),
 		Params: contract.Params{
-			ThinkingEcho: echoChoices()[f.echoIdx],
-			ReasoningKey: key,
-			Reasoning:    f.buildReasoning(),
+			ThinkingEcho:    echoChoices()[f.echoIdx],
+			ReasoningKeyIn:  pickKey(f.reasoningKeyInIdx, f.reasoningKeyInCustom.Value()),
+			ReasoningKeyOut: pickKey(f.reasoningKeyOutIdx, f.reasoningKeyOutCustom.Value()),
+			Reasoning:       f.buildReasoning(),
 		},
 	}
 }
@@ -356,6 +384,14 @@ func handleModelFormKey(a *App, e *EventKey) {
 			cycleChoice(f, +1)
 		}
 		return
+	case KeyRune:
+		// Space is a second "next value" key on choice rows (←→ cycles too). In text fields it
+		// is just a space character and falls through to the editor below.
+		if e.Rune() == ' ' && !f.focus.isText() && f.focus != formFieldReasoningEntry {
+			cycleChoice(f, +1)
+			a.forceRender = true
+			return
+		}
 	case KeyEnter:
 		if f.focus == formFieldReasoningEntry && !f.reasoning {
 			openReasoningPage(a)
@@ -434,14 +470,24 @@ func cycleChoice(f *modelFormState, delta int) {
 		}
 	case formFieldReasoningDefault:
 		f.cycleEffortDefault(delta)
-	case formFieldReasoningKeyChoice:
-		f.reasoningKeyIdx = wrapIdx(f.reasoningKeyIdx, delta, len(reasoningKeyChoices()))
-		if f.reasoningKeyIdx != reasoningKeyCustomIdx {
+	case formFieldReasoningKeyInChoice:
+		f.reasoningKeyInIdx = wrapIdx(f.reasoningKeyInIdx, delta, len(reasoningKeyChoices()))
+		if f.reasoningKeyInIdx != reasoningKeyCustomIdx {
 			// The custom text row disappears; keep the focus on the choice row.
-			f.focus = formFieldReasoningKeyChoice
+			f.focus = formFieldReasoningKeyInChoice
+		}
+	case formFieldReasoningKeyOutChoice:
+		f.reasoningKeyOutIdx = wrapIdx(f.reasoningKeyOutIdx, delta, len(reasoningKeyChoices()))
+		if f.reasoningKeyOutIdx != reasoningKeyCustomIdx {
+			// The custom text row disappears; keep the focus on the choice row.
+			f.focus = formFieldReasoningKeyOutChoice
 		}
 	case formFieldThinkingEcho:
 		f.echoIdx = wrapIdx(f.echoIdx, delta, len(echoChoices()))
+		if !f.echoOn() {
+			// The outbound rows disappear; keep the focus on the echo row.
+			f.focus = formFieldThinkingEcho
+		}
 	default:
 		if i, ok := f.focus.effortIdx(); ok {
 			f.effortsOn[i] = !f.effortsOn[i]

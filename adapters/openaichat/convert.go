@@ -28,15 +28,15 @@ const defaultReasoningKey = "reasoning_content"
 //	reasoning         — OpenAI GPT-OSS guidance; current vLLM (and its request side)
 //	reasoning_text    — observed dialect (minimax-code scans it)
 //
-// The protocol never standardized a field, so inbound accepts any of them and outbound echoes
-// the dialect the endpoint actually spoke (learned per endpoint by reasoningDialect, pinned by
-// Config.ReasoningKey).
+// The protocol never standardized a field, so inbound accepts any of them (pinned by
+// Config.ReasoningKeyIn) and outbound echoes the dialect the endpoint actually spoke (learned per
+// endpoint by reasoningDialect, pinned by Config.ReasoningKeyOut).
 var reasoningKeys = []string{defaultReasoningKey, "reasoning_details", "reasoning", "reasoning_text"}
 
 // extractReasoning returns the reasoning text from inbound message/delta extras together with
 // the wire key it was found under. The first string-valued key wins; non-string values (vLLM's
 // `reasoning_content: null` placeholder, OpenRouter's array-shaped `reasoning_details`) are
-// skipped. With explicitKey set (a pinned dialect), only that key is consulted.
+// skipped. With explicitKey set (a pinned inbound key), only that key is consulted.
 func extractReasoning(extras map[string]respjson.Field, explicitKey string) (text, key string, ok bool) {
 	if explicitKey != "" {
 		text, ok = reasoningString(extras, explicitKey)
@@ -51,27 +51,28 @@ func extractReasoning(extras map[string]respjson.Field, explicitKey string) (tex
 }
 
 // reasoningDialect is the per-endpoint wire-field dialect for thinking content ("reply in the
-// dialect the peer spoke"). It observes inbound responses, remembers which wire key carried
-// reasoning, and hands that key to outbound history serialization. Detection never clears: a
-// response without reasoning keeps the last known dialect, and an endpoint that switches
-// dialects mid-session is adapted to on its next observation. An explicit (pinned) key always
-// wins and disables detection. The dialect is a property of the endpoint, so one instance is
-// shared by reference across streams.
+// dialect the peer spoke"). Reading and writing are configured independently: explicitIn pins the
+// inbound key to extract from (empty = scan the known set), explicitOut pins the outbound echo key
+// (empty = echo under the key reasoning was observed under). Detection never clears: a response
+// without reasoning keeps the last known dialect, and an endpoint that switches dialects
+// mid-session is adapted to on its next observation. The dialect is a property of the endpoint,
+// so one instance is shared by reference across streams.
 type reasoningDialect struct {
-	explicit string     // pinned by config; disables detection when non-empty
-	mu       sync.Mutex // guards detected (Stream may be called concurrently)
-	detected string     // last observed inbound key
+	explicitIn  string     // pinned inbound key; "" = scan the known set
+	explicitOut string     // pinned outbound key; "" = echo under the observed key
+	mu          sync.Mutex // guards detected (Stream may be called concurrently)
+	detected    string     // key reasoning was last observed under
 }
 
-func newReasoningDialect(explicit string) *reasoningDialect {
-	return &reasoningDialect{explicit: explicit}
+func newReasoningDialect(explicitIn, explicitOut string) *reasoningDialect {
+	return &reasoningDialect{explicitIn: explicitIn, explicitOut: explicitOut}
 }
 
-// observe extracts the reasoning text from inbound extras, learning the wire key it arrived
-// under unless the dialect is pinned.
+// observe extracts the reasoning text from inbound extras and remembers the wire key it arrived
+// under (the pinned inbound key, or the scan winner).
 func (d *reasoningDialect) observe(extras map[string]respjson.Field) (string, bool) {
-	text, key, ok := extractReasoning(extras, d.explicit)
-	if ok && d.explicit == "" {
+	text, key, ok := extractReasoning(extras, d.explicitIn)
+	if ok {
 		d.mu.Lock()
 		d.detected = key
 		d.mu.Unlock()
@@ -79,16 +80,22 @@ func (d *reasoningDialect) observe(extras map[string]respjson.Field) (string, bo
 	return text, ok
 }
 
-// outboundKey returns the wire key to serialize thinking content into on outbound messages:
-// the pinned key, else the last observed key, else the de-facto default.
+// outboundKey returns the wire key to serialize thinking content into on outbound messages: the
+// pinned outbound key, else the last observed key (the dialect the endpoint spoke), else the
+// pinned inbound key (the only dialect it would ever speak once pinned), else the de-facto
+// default.
 func (d *reasoningDialect) outboundKey() string {
-	if d.explicit != "" {
-		return d.explicit
+	if d.explicitOut != "" {
+		return d.explicitOut
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.detected != "" {
-		return d.detected
+	detected := d.detected
+	d.mu.Unlock()
+	if detected != "" {
+		return detected
+	}
+	if d.explicitIn != "" {
+		return d.explicitIn
 	}
 	return defaultReasoningKey
 }
