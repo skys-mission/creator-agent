@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -28,23 +28,68 @@ const defaultReasoningKey = "reasoning_content"
 //	reasoning_text    — observed dialect (minimax-code scans it)
 //
 // The protocol never standardized a field, so inbound accepts any of them and outbound echoes
-// the dialect key (pinned by Config.ReasoningKey or defaulting to reasoning_content).
+// the dialect the endpoint actually spoke (learned per endpoint by reasoningDialect, pinned by
+// Config.ReasoningKey).
 var reasoningKeys = []string{defaultReasoningKey, "reasoning_details", "reasoning", "reasoning_text"}
 
-// extractReasoning returns the reasoning text from inbound message/delta extras. The first
-// string-valued key wins; non-string values (vLLM's `reasoning_content: null` placeholder,
-// OpenRouter's array-shaped `reasoning_details`) are skipped. With explicitKey set (a pinned
-// dialect), only that key is consulted.
-func extractReasoning(extras map[string]respjson.Field, explicitKey string) (string, bool) {
+// extractReasoning returns the reasoning text from inbound message/delta extras together with
+// the wire key it was found under. The first string-valued key wins; non-string values (vLLM's
+// `reasoning_content: null` placeholder, OpenRouter's array-shaped `reasoning_details`) are
+// skipped. With explicitKey set (a pinned dialect), only that key is consulted.
+func extractReasoning(extras map[string]respjson.Field, explicitKey string) (text, key string, ok bool) {
 	if explicitKey != "" {
-		return reasoningString(extras, explicitKey)
+		text, ok = reasoningString(extras, explicitKey)
+		return text, explicitKey, ok
 	}
-	for _, key := range reasoningKeys {
-		if text, ok := reasoningString(extras, key); ok {
-			return text, true
+	for _, k := range reasoningKeys {
+		if text, ok := reasoningString(extras, k); ok {
+			return text, k, true
 		}
 	}
-	return "", false
+	return "", "", false
+}
+
+// reasoningDialect is the per-endpoint wire-field dialect for thinking content ("reply in the
+// dialect the peer spoke"). It observes inbound responses, remembers which wire key carried
+// reasoning, and hands that key to outbound history serialization. Detection never clears: a
+// response without reasoning keeps the last known dialect, and an endpoint that switches
+// dialects mid-session is adapted to on its next observation. An explicit (pinned) key always
+// wins and disables detection. The dialect is a property of the endpoint, so one instance is
+// shared by reference across streams.
+type reasoningDialect struct {
+	explicit string     // pinned by config; disables detection when non-empty
+	mu       sync.Mutex // guards detected (Stream may be called concurrently)
+	detected string     // last observed inbound key
+}
+
+func newReasoningDialect(explicit string) *reasoningDialect {
+	return &reasoningDialect{explicit: explicit}
+}
+
+// observe extracts the reasoning text from inbound extras, learning the wire key it arrived
+// under unless the dialect is pinned.
+func (d *reasoningDialect) observe(extras map[string]respjson.Field) (string, bool) {
+	text, key, ok := extractReasoning(extras, d.explicit)
+	if ok && d.explicit == "" {
+		d.mu.Lock()
+		d.detected = key
+		d.mu.Unlock()
+	}
+	return text, ok
+}
+
+// outboundKey returns the wire key to serialize thinking content into on outbound messages:
+// the pinned key, else the last observed key, else the de-facto default.
+func (d *reasoningDialect) outboundKey() string {
+	if d.explicit != "" {
+		return d.explicit
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.detected != "" {
+		return d.detected
+	}
+	return defaultReasoningKey
 }
 
 // reasoningString reads one candidate key, accepting string values only.
@@ -197,16 +242,17 @@ func toolParams(tools []contract.ToolInfo) ([]openai.ChatCompletionToolParam, er
 
 // streamMapper converts stream chunks into contract events. It carries the per-stream state:
 // tool calls stream as fragments keyed by index. Inbound reasoning is always extracted — whether
-// the user sees it is the UI's decision, never the wire's.
+// the user sees it is the UI's decision, never the wire's — and the wire key it arrived under
+// feeds the shared dialect learner (see reasoningDialect).
 type streamMapper struct {
-	toolIDs      map[int64]string // tool call index -> call ID
-	reasoningKey string           // pinned wire key ("" = de-facto scan)
+	toolIDs map[int64]string // tool call index -> call ID
+	dialect *reasoningDialect
 }
 
-func newStreamMapper(reasoningKey string) *streamMapper {
+func newStreamMapper(dialect *reasoningDialect) *streamMapper {
 	return &streamMapper{
-		toolIDs:      map[int64]string{},
-		reasoningKey: strings.TrimSpace(reasoningKey),
+		toolIDs: map[int64]string{},
+		dialect: dialect,
 	}
 }
 
@@ -232,7 +278,7 @@ func (s *streamMapper) Map(chunk *openai.ChatCompletionChunk) []contract.Event {
 	// Thinking text rides delta extension fields (see reasoningKeys). Emitted before content
 	// because it conceptually precedes the answer within the same chunk. Note: SDK response
 	// extras are always recorded with Valid()==false; Raw() is where the wire value lives.
-	if text, ok := extractReasoning(d.JSON.ExtraFields, s.reasoningKey); ok {
+	if text, ok := s.dialect.observe(d.JSON.ExtraFields); ok {
 		evs = append(evs, contract.ThinkingEvent{Delta: text})
 	}
 	if d.Content != "" {

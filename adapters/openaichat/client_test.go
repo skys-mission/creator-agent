@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,5 +428,123 @@ func TestStreamReasoningKeyPin(t *testing.T) {
 	want := []string{"think:pinned thought", "text:answer", "finish:stop"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (pinned key must be the only consulted key)", got, want)
+	}
+}
+
+// assistantHistory is a request whose assistant turn carries thinking, used to observe which
+// wire key the echo lands under.
+var assistantHistory = &contract.ModelRequest{
+	Messages: []contract.Message{
+		contract.UserMessage("hi"),
+		contract.AssistantMessageWithReasoning("answer", "the thought", ""),
+	},
+}
+
+// echoedKeys returns the extra field names (besides the standard ones) of the outbound
+// assistant message.
+func echoedKeys(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	if body == nil {
+		t.Fatal("no request body captured")
+	}
+	msgs, _ := body["messages"].([]any)
+	for _, m := range msgs {
+		msg, ok := m.(map[string]any)
+		if !ok || msg["role"] != "assistant" {
+			continue
+		}
+		var keys []string
+		for k := range msg {
+			switch k {
+			case "role", "content", "tool_calls", "name", "refusal":
+			default:
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		return keys
+	}
+	t.Fatal("no assistant message in the outbound request")
+	return nil
+}
+
+func TestStreamLearnsReasoningDialect(t *testing.T) {
+	// The endpoint speaks `reasoning`, not the de-facto `reasoning_content`. After observing
+	// the dialect, outbound history must echo thinking under the same key ("reply in the
+	// dialect the peer spoke") — and a later response without reasoning must not clear it.
+	var calls atomic.Int32
+	srv, seen := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		if calls.Add(1) == 1 {
+			writeSSE(w, flusher,
+				testChunkPrefix+`"choices":[{"index":0,"delta":{"reasoning":"thought-a"}}]}`,
+				testChunkPrefix+`"choices":[{"index":0,"delta":{"content":"answer"}}]}`,
+				`[DONE]`,
+			)
+			return
+		}
+		writeSSE(w, flusher,
+			testChunkPrefix+`"choices":[{"index":0,"delta":{"content":"answer"}}]}`,
+			`[DONE]`,
+		)
+	})
+	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+
+	run := func(req *contract.ModelRequest) {
+		t.Helper()
+		ch, err := c.Stream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Stream() = %v", err)
+		}
+		collect(t, ch, 5*time.Second)
+	}
+
+	// Call 1: observe the dialect.
+	run(&contract.ModelRequest{Messages: []contract.Message{contract.UserMessage("hi")}})
+	// Call 2: the echo must ride the learned key, never the de-facto default.
+	run(assistantHistory)
+	if seen.broken {
+		t.Fatal("server could not decode the request body")
+	}
+	if got := echoedKeys(t, seen.body); len(got) != 1 || got[0] != "reasoning" {
+		t.Fatalf("echoed keys = %v, want [reasoning]", got)
+	}
+
+	// Detection never clears: call 2 answered without reasoning, so call 3 must still echo
+	// under the learned key.
+	run(assistantHistory)
+	if got := echoedKeys(t, seen.body); len(got) != 1 || got[0] != "reasoning" {
+		t.Fatalf("echoed keys after a silent response = %v, want [reasoning]", got)
+	}
+}
+
+func TestStreamPinnedKeyDisablesLearning(t *testing.T) {
+	// A pinned key consults nothing else inbound and always wins outbound, even though the
+	// endpoint speaks a different dialect.
+	srv, seen := sseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		writeSSE(w, flusher,
+			testChunkPrefix+`"choices":[{"index":0,"delta":{"reasoning_content":"not mine"}}]}`,
+			`[DONE]`,
+		)
+	})
+	c, err := New(Config{ModelID: "test-model", BaseURL: srv.URL, ReasoningKey: "my_think"})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	ch, err := c.Stream(context.Background(), assistantHistory)
+	if err != nil {
+		t.Fatalf("Stream() = %v", err)
+	}
+	got := describe(collect(t, ch, 5*time.Second))
+	want := []string{"finish:stop"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events = %v, want %v (pinned key must not consult reasoning_content)", got, want)
+	}
+	if keys := echoedKeys(t, seen.body); len(keys) != 1 || keys[0] != "my_think" {
+		t.Fatalf("echoed keys = %v, want [my_think]", keys)
 	}
 }

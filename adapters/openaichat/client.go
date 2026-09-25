@@ -5,10 +5,11 @@
 // Chain-of-thought handling follows the de-facto ecosystem standard (documented in
 // docs/architecture.md §4): inbound reasoning is always scanned across the known wire field set
 // (reasoning_content / reasoning_details / reasoning / reasoning_text), and assistant thinking is
-// echoed into outbound history under the same dialect key unless DisableThinkingEcho is set.
-// Showing thinking to the user is a UI concern (the TUI has its own display mode). Deliberately
-// not handled yet: multimodal parts, sampling knobs, request-side thinking enablement
-// (reasoning_effort and friends) — those are dialect-specific and tracked in Params.
+// echoed into outbound history under the dialect the endpoint itself spoke — learned per
+// endpoint from its responses, unless DisableThinkingEcho or a pinned ReasoningKey says
+// otherwise. Showing thinking to the user is a UI concern (the TUI has its own display mode).
+// Deliberately not handled yet: multimodal parts, sampling knobs; request-side thinking
+// enablement (reasoning_effort and friends) is dialect-specific and carried by Params.
 package openaichat
 
 import (
@@ -39,8 +40,10 @@ type Config struct {
 	// while some gateways require thinking in history. Inbound reasoning is always parsed and
 	// emitted — whether the user SEES it is the UI's concern, not the wire's.
 	DisableThinkingEcho bool
-	// ReasoningKey pins the wire field name for reasoning content (non-standard gateways).
-	// Empty means the de-facto field scan inbound and the de-facto default outbound.
+	// ReasoningKey pins the wire field name for reasoning content (non-standard gateways),
+	// consulted for both inbound extraction and outbound echo, and disabling dialect learning.
+	// Empty means smart adaptation: the de-facto field scan inbound, and outbound echo under
+	// whatever key the endpoint itself spoke (learned per endpoint, see reasoningDialect).
 	ReasoningKey string
 	// Reasoning is the thinking-depth control declaration (kind + supported levels + default);
 	// see contract.Reasoning. kind=effort maps to reasoning_effort on this protocol.
@@ -49,9 +52,10 @@ type Config struct {
 
 // Client implements adapters.ModelClient for the Chat Completions protocol.
 type Client struct {
-	cfg  Config
-	name string
-	api  openai.Client
+	cfg     Config
+	name    string
+	api     openai.Client
+	dialect *reasoningDialect // per-endpoint reasoning-field dialect (shared across streams)
 }
 
 // New builds a client. The config is authoritative: SDK environment defaults
@@ -73,19 +77,17 @@ func New(cfg Config) (*Client, error) {
 	if name == "" {
 		name = cfg.ModelID
 	}
-	return &Client{cfg: cfg, name: name, api: api}, nil
+	return &Client{cfg: cfg, name: name, api: api, dialect: newReasoningDialect(cfg.ReasoningKey)}, nil
 }
 
 // echoKey returns the wire key for echoing thinking into outbound history, or "" when the echo
-// is disabled. An explicit ReasoningKey pins the dialect; otherwise the de-facto default.
+// is disabled. An explicit ReasoningKey pins the dialect; otherwise the key is what the endpoint
+// spoke (learned), falling back to the de-facto default before any observation.
 func (c *Client) echoKey() string {
 	if c.cfg.DisableThinkingEcho {
 		return ""
 	}
-	if c.cfg.ReasoningKey != "" {
-		return c.cfg.ReasoningKey
-	}
-	return defaultReasoningKey
+	return c.dialect.outboundKey()
 }
 
 // Name returns the human-readable model identity for logs and UI.
@@ -111,7 +113,7 @@ func (c *Client) Stream(ctx context.Context, req *contract.ModelRequest) (<-chan
 		defer close(out)
 		defer stream.Close()
 
-		mapper := newStreamMapper(c.cfg.ReasoningKey)
+		mapper := newStreamMapper(c.dialect)
 		for stream.Next() {
 			chunk := stream.Current()
 			for _, ev := range mapper.Map(&chunk) {
