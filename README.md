@@ -2,7 +2,7 @@
 
 > 开源、多模型中立的 AI coding agent。Go 单二进制，开箱即用。
 
-> **状态：从零重建中。** 只有 TUI 渲染层被完整保留（约 19.5k 行，含 30+ 测试文件），旧的 core / config / adapters / middlewares / 工具实现已全部移除。踩坑经验浓缩在 [docs/tui.md](docs/tui.md)。
+> **状态：从零重建中。** 旧的 core / config / adapters / middlewares / 工具实现已全部移除；TUI 也已砍到"输入框 + `/model`（模型对象管理）"的极简外壳（砍了什么、怎么找回见 [docs/tui-cut.md](docs/tui-cut.md)）。踩坑经验浓缩在 [docs/tui.md](docs/tui.md)。
 
 [文档](docs/) · [贡献](CONTRIBUTING.md)
 
@@ -14,7 +14,7 @@
 |---|---|
 | `kernel/` | 底层组件生命周期框架（[cordis](https://github.com/cordiverse/cordis) 极简版）：组件注册、按名查找、依赖序启动、逆序销毁、全局状态机。零外部依赖，选型记录与七条不变量见 [docs/kernel.md](docs/kernel.md) |
 | `contract/` | TUI 消费的全部 API：领域模型（`Message` / `Event` / `ToolInfo` / `SessionStore` / `Agent`）+ 运行时控制面（`Mode` / `AllowSet` / `SandboxController`）+ 少量叶子助手。**不含任何 agent 逻辑** |
-| `cmd/creator-agent/tui/` | 自研全屏 TUI，**不依赖 bubbletea / tcell**。含 `tui/terminal/`（termios raw 模式 / alt screen / SIGWINCH / 输入解码）与 `tui/i18n/` |
+| `cmd/creator-agent/tui/` | 自研全屏 TUI，**不依赖 bubbletea / tcell**。当前是极简外壳（输入框 + `/model` 二级菜单），砍掉的功能清单见 [docs/tui-cut.md](docs/tui-cut.md)。含 `tui/terminal/`（termios raw 模式 / alt screen / SIGWINCH / 输入解码）与 `tui/i18n/` |
 | `cmd/creator-agent/diag/` | 不可 recover 崩溃（heap corruption 类 `fatal error`）的落盘诊断：`fatal.log` + `trace.log` |
 | `docs/tui.md` | 渲染不变量、并发模型、宽字符处理、测试策略、崩溃排查工具链 —— **踩坑经验都在这** |
 | `scripts/dev-sandbox.sh` | 隔离测试沙箱（用完即焚，不碰源码仓库 / `~/.creator` / git），待 CLI 入口重建后恢复 `make` target |
@@ -40,6 +40,24 @@ make help        # 所有命令
 ```
 
 要求 **Go 1.27+**（构建时）。运行时零依赖。
+
+## 运行
+
+```bash
+./creator-agent            # 进入全屏界面（TUI），界面语言按终端 locale 自动中英
+./creator-agent -lang zh   # 指定界面语言（en | zh）
+./creator-agent status     # 打印一行核心状态
+./creator-agent serve      # 开 gRPC 网络面（默认只听回环，带 bearer token）
+```
+
+界面里输入 `/` 会弹出命令提示（Tab 补全 / ↑↓ 选用）。唯一命令 `/model` 打开模型对象管理
+（二级菜单：新建 / 管理删除；协议 / Base URL / 模型 ID / API Key / 思维链开关 / 推理控制）。
+推理控制按模型能力分三档：**无**（不发送，安全默认）/ **仅开关**（true/false 型，选方言：
+`enable_thinking` / `think` / `thinking.type`）/ **等级**
+（从 `none·minimal·low·medium·high·xhigh·max` 预设里勾选支持级别，再选默认等级），
+保存在 `~/.creator/models.json`（0600，含密钥，勿入 git）。
+agent 运行时还在重建（P2），输入普通文字只会收到一条"运行时未接入"提示，草稿会保留。
+退出：`Ctrl+D` 或两秒内连按两次 `Ctrl+C`。
 
 提交前确保 `make test` + `make vet` + `make fmt` 全绿。
 

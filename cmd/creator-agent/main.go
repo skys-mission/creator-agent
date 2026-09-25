@@ -4,7 +4,8 @@
 //
 // Subcommands:
 //
-//	(none) | status   in-process direct call against core (the default product form)
+//	(none)            full-screen TUI, in-process direct call (the default product form)
+//	status            one-shot core status line
 //	serve             open the gRPC network face (loopback + bearer token)
 package main
 
@@ -17,8 +18,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
+	"github.com/skys-mission/creator-agent/cmd/creator-agent/tui"
 	"github.com/skys-mission/creator-agent/contract"
 	"github.com/skys-mission/creator-agent/core"
 	"github.com/skys-mission/creator-agent/kernel"
@@ -44,7 +47,9 @@ func main() {
 
 func run(args []string) error {
 	switch {
-	case len(args) == 0 || args[0] == "status":
+	case len(args) == 0 || strings.HasPrefix(args[0], "-"):
+		return runTUI(args)
+	case args[0] == "status":
 		return runStatus()
 	case args[0] == "serve":
 		return runServe(args[1:])
@@ -53,7 +58,46 @@ func run(args []string) error {
 	}
 }
 
-// runStatus is the default product form: one direct method call, zero network.
+// runTUI is the default product form: the minimal rebuild shell (input box + /model-new),
+// in-process, no network. Optional flags come before any subcommand ("creator-agent -lang zh").
+func runTUI(args []string) error {
+	fs := flag.NewFlagSet("creator-agent", flag.ContinueOnError)
+	lang := fs.String("lang", "", "UI language: en | zh (default: from locale)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown command %q (status | serve)", fs.Arg(0))
+	}
+	l := *lang
+	if l == "" {
+		l = detectLang()
+	}
+	err := tui.Run(l)
+	if errors.Is(err, tui.ErrTerminalUnavailable) {
+		// No REPL fallback exists yet: say so plainly instead of failing cryptically.
+		return fmt.Errorf("%w — the full-screen TUI needs a real interactive terminal (run it from a shell, not a pipe or redirect)", err)
+	}
+	return err
+}
+
+// detectLang picks the UI language from the locale: any zh* locale shows Chinese, everything else
+// English (the i18n default).
+func detectLang() string {
+	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		loc := strings.ToLower(os.Getenv(key))
+		if loc == "" || loc == "c" || loc == "posix" {
+			continue
+		}
+		if strings.HasPrefix(loc, "zh") {
+			return "zh"
+		}
+		return "en"
+	}
+	return "en"
+}
+
+// runStatus is the one-shot status line: one direct core method call, zero network.
 func runStatus() error {
 	c := core.New(version)
 	st, err := c.Status(context.Background())

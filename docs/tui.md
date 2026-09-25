@@ -1,12 +1,12 @@
 # TUI 渲染层：架构与踩坑经验
 
-本仓库正处于从零重建阶段：旧的 core / config / adapters / middlewares / 工具实现已全部移除，**只有 TUI 被完整保留**（活代码 + 全部单测）。原因很简单——这一层踩过的坑最多，而且每个坑都固化成了渲染不变量和测试断言。
+本仓库正处于从零重建阶段：旧的 core / config / adapters / middlewares / 工具实现已全部移除。TUI 起初被完整保留（活代码 + 全部单测），**后按重构计划砍到"输入框 + `/model-new`"的极简外壳**（砍了什么、怎么找回、重建顺序见 [docs/tui-cut.md](docs/tui-cut.md)）。本文的价值不受影响：砍掉的代码都在 git 历史与 `attic/tui-legacy/` 备份里，重建哪块就按本文哪节的不变量回来——这一层踩过的坑最多，而且每个坑都固化成了渲染不变量和测试断言。
 
 本文是那段经验的浓缩。**改 TUI 之前必读**，尤其第 4 节的三条不变量。
 
 ## 1. 为什么单独留着它
 
-TUI 约 19.5k 行，是自研的全屏渲染层，**不依赖 bubbletea / tcell 等框架**。依赖面已经收敛到 `contract/` 包（纯类型 + 接口 + 少量叶子助手），不含任何 agent 逻辑，因此可以脱离 core 独立编译、独立测试。
+TUI（砍掉前约 19.5k 行）是自研的全屏渲染层，**不依赖 bubbletea / tcell 等框架**。依赖面已经收敛到 `contract/` 包（纯类型 + 接口 + 少量叶子助手），不含任何 agent 逻辑，因此可以脱离 core 独立编译、独立测试。
 
 重建 core 时，`contract/` 就是它要实现的边界：`Agent` / `Event` / `Message` / `ToolInfo` / `SessionStore` 等类型的形状已经定死，TUI 只认这些。
 

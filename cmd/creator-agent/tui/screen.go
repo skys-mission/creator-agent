@@ -428,6 +428,24 @@ func (s *Surface) FillFrame(ch rune, bg Color) {
 	}
 }
 
+// styledRun is one styled span of text — the Surface text vocabulary (Surface.DrawText).
+type styledRun struct {
+	text  string
+	style Style
+}
+
+// styledLine is a rendered line of styled runs (input to Surface.DrawText).
+type styledLine struct {
+	runs []styledRun
+}
+
+func (sl *styledLine) appendRun(text string, st Style) {
+	if text == "" {
+		return
+	}
+	sl.runs = append(sl.runs, styledRun{text: text, style: st})
+}
+
 // DrawText writes styled runs onto a single local row, starting at colStart. Wide runes that do not
 // fit before the right edge stop the write (the remaining cells keep whatever was there; callers
 // typically ClearRow first). Zero-width runes (combining marks) are skipped: they should be rendered as combining marks on

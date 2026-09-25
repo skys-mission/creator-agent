@@ -6,7 +6,6 @@ package tui
 // suite is order-independent.
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -91,84 +90,8 @@ func TestThemeCycleToggle(t *testing.T) {
 	}
 }
 
-// TestThemesCommand verifies the /themes command: no-arg cycles + informs, named arg sets,
-// unknown arg is rejected with the theme unchanged.
-func TestThemesCommand(t *testing.T) {
-	savedName, savedPal := snapshotTheme()
-	t.Cleanup(func() { restoreTheme(savedName, savedPal) })
-
-	t.Run("no_arg_opens_picker", func(t *testing.T) {
-		a, _ := newAppWithSim(t, 80, 24)
-		ApplyTheme("dark")
-		ok := handleSlashCommand(a, "/themes")
-		if !ok {
-			t.Fatalf("/themes should be handled")
-		}
-		// Bare /themes now opens the live-preview picker (it no longer cycles). The committed theme
-		// is unchanged at open time; the snapshot is captured for Esc revert.
-		if !a.themePicker.open {
-			t.Fatalf("bare /themes should open the theme picker")
-		}
-		if CurrentTheme() != "dark" {
-			t.Fatalf("opening the picker should not change the committed theme; got %q, want dark", CurrentTheme())
-		}
-		if a.themePicker.savedName != "dark" {
-			t.Errorf("picker should snapshot the committed theme; savedName = %q, want dark", a.themePicker.savedName)
-		}
-		if !a.forceRender {
-			t.Errorf("opening the picker should set forceRender for a full repaint")
-		}
-	})
-
-	t.Run("named_arg_sets", func(t *testing.T) {
-		a, _ := newAppWithSim(t, 80, 24)
-		ApplyTheme("dark")
-		if !handleSlashCommand(a, "/themes light") {
-			t.Fatalf("/themes light should be handled")
-		}
-		if CurrentTheme() != "light" {
-			t.Fatalf("after /themes light, theme = %q, want light", CurrentTheme())
-		}
-	})
-
-	t.Run("unknown_arg_rejected", func(t *testing.T) {
-		a, _ := newAppWithSim(t, 80, 24)
-		ApplyTheme("light") // pre-condition
-		if !handleSlashCommand(a, "/themes solarized") {
-			t.Fatalf("/themes solarized should still be handled (with an error message)")
-		}
-		// Theme must be unchanged (still light), not silently fallen back to dark.
-		if CurrentTheme() != "light" {
-			t.Fatalf("unknown theme should not change current theme; got %q, want light", CurrentTheme())
-		}
-		last := a.messages[len(a.messages)-1].content.String()
-		if !strings.Contains(last, "Unknown theme") {
-			t.Fatalf("expected 'Unknown theme' message; got %q", last)
-		}
-	})
-}
-
-// TestThemesCommandInRegistry verifies /themes is registered so it shows up in /help, Tab
-// completion, and the command palette (single source of truth).
-func TestThemesCommandInRegistry(t *testing.T) {
-	if findCommand("/themes") == nil {
-		t.Fatalf("/themes should be in the command registry")
-	}
-	if commandDesc("/themes") == "" {
-		t.Fatalf("/themes should have a description")
-	}
-	// It should appear in the derived slashCommands list (used by /help + Tab).
-	found := false
-	for _, c := range getSlashCommands() {
-		if c == "/themes" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("/themes missing from slashCommands; got %v", getSlashCommands())
-	}
-}
+// The /themes command and its picker were cut with the 2026-09 rebuild (docs/tui-cut.md); the
+// palette API above stays as infrastructure for when theming returns.
 
 // TestThemeConfigNormalization verifies the tui package's normalizeThemeName handles the values a
 // user would type, and that isSupportedTheme only accepts the two real themes.

@@ -14,10 +14,8 @@ test-fast: ## 快速测试（无 race 检测，本地迭代用）
 test-cover: ## 测试 + 覆盖率（含 race 检测）
 	go test -race ./... -cover
 
-bench: ## 跑稳定的基准测试（wrapStyledLine / truncateStrW 等纯函数热路径）
-	@# 真实运行时每帧只渲染一次；这里只跑不涉及复杂渲染状态的稳定 bench。
-	@# 想看渲染 bench 可手动单跑：go test -run='^$$' -bench=. ./cmd/creator-agent/tui/
-	go test -run='^$$' -bench='BenchmarkWrapStyledLine|BenchmarkTruncateStrW' -benchmem ./cmd/creator-agent/tui/
+bench: ## 跑全部基准测试（纯函数热路径；目前覆盖小，重建时逐块补回）
+	go test -run='^$$' -bench=. -benchmem ./...
 
 vet: ## 静态检查
 	go vet ./...

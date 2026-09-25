@@ -52,3 +52,4 @@ secrets/
 *.local.json
 config.local.*
 
+attic/

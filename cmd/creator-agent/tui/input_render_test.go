@@ -5,27 +5,26 @@ package tui
 // inspected via GetContents.
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/skys-mission/creator-agent/contract"
 )
 
 // newAppWithSim builds an App backed by a self-built Screen writing to a throwaway buffer (no real
-// terminal). It returns the app and the screen for content inspection / key injection.
+// terminal). It returns the app and the screen for content inspection / key injection. The model
+// store is pinned to a per-test temp file so no test can ever read or write the real
+// ~/.creator/models.json.
 func newAppWithSim(t *testing.T, w, h int) (*App, *Screen) {
 	t.Helper()
 	sim := NewScreen(&bufWriter{}, w, h)
 	a := &App{
-		screen:   sim,
-		width:    w,
-		height:   h,
-		atBottom: true,
-		quitCh:   make(chan struct{}),
-		events:   make(chan any, 64),
-		rt: runtimeState{
-			md: newMarkdownCache(),
-		},
+		screen: sim,
+		width:  w,
+		height: h,
+		quitCh: make(chan struct{}),
+		events: make(chan any, 64),
 	}
+	a.models.path = filepath.Join(t.TempDir(), "models.json")
 	a.input.SetWidth(w - 4)
 	return a, sim
 }
@@ -103,7 +102,7 @@ func TestInputRendersTypedText(t *testing.T) {
 	found := false
 	_, h := sim.Size()
 	for y := 0; y < h; y++ {
-		if containsSubstring(cellText(sim, y), "hi") {
+		if strings.Contains(cellText(sim, y), "hi") {
 			found = true
 			break
 		}
@@ -167,10 +166,10 @@ func TestInputCtrlWDeletesWord(t *testing.T) {
 
 func TestInputDoesNotSubmitOnEmptyEnter(t *testing.T) {
 	a, _ := newAppWithSim(t, 80, 24)
-	// No agent; Enter on empty input should be a no-op (no panic, no stream).
+	// Enter on empty input is a no-op: no notice, no crash.
 	injectKey(a, KeyEnter)
-	if a.status != statusIdle {
-		t.Errorf("empty Enter changed status to %v", a.status)
+	if a.notice != "" {
+		t.Errorf("empty Enter set notice = %q", a.notice)
 	}
 }
 
@@ -242,19 +241,3 @@ func findInputPromptX(t *testing.T, sim *Screen) int {
 	t.Fatal("could not locate input prompt '❯' to anchor cursor assertion")
 	return -1
 }
-
-func containsSubstring(haystack, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
-
-// Compile-time guard: core import is used for the stream type only in helpers above (kept for
-// future extension); ensure the test compiles cleanly.
-var _ = contract.UserMessage
